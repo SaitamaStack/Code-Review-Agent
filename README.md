@@ -40,7 +40,7 @@ code-review-agent/
 
 ```bash
 # Recommended model
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:8b
 
 # Alternative options
 ollama pull codellama:7b
@@ -82,7 +82,7 @@ Adjust settings in the sidebar:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Ollama Model | `qwen2.5-coder:7b` | The LLM model to use |
+| Ollama Model | `qwen3:8b` | The LLM model to use |
 | Max Retries | `3` | Max attempts to fix failing code |
 | Timeout | `10s` | Execution timeout |
 | Temperature | `0.1` | LLM creativity (lower = more deterministic) |

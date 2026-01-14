@@ -24,7 +24,7 @@ class Config:
     """
     
     # LLM Settings
-    model_name: str = "qwen2.5-coder:7b"
+    model_name: str = "qwen3:8b"
     ollama_base_url: str = "http://localhost:11434"
     temperature: float = 0.1  # Low temperature for more deterministic code generation
     
