@@ -119,7 +119,7 @@ with st.sidebar:
     model_name = st.text_input(
         "Ollama Model",
         value=config.model_name,
-        help="The Ollama model to use (e.g., qwen3:8b, codellama:7b)",
+        help="The Ollama model to use (e.g., qwen2.5:0.5b for CPU, qwen3:8b for GPU)",
     )
     
     ollama_url = st.text_input(
