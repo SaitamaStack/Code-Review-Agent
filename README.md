@@ -39,11 +39,12 @@ code-review-agent/
 3. A code model pulled in Ollama:
 
 ```bash
-# Recommended model (requires ~2GB RAM)
-ollama pull qwen3:1.7b
+# Recommended model (lightweight, requires ~500MB RAM)
+ollama pull qwen2.5:0.5b
 
 # Alternative options (require more RAM)
-ollama pull qwen3:8b           # ~8GB RAM needed
+ollama pull qwen2.5:1.5b       # ~2GB RAM needed
+ollama pull qwen2.5:7b         # ~8GB RAM needed
 ollama pull codellama:7b       # ~8GB RAM needed
 ```
 
@@ -82,7 +83,7 @@ Adjust settings in the sidebar:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Ollama Model | `qwen3:1.7b` | The LLM model to use |
+| Ollama Model | `qwen2.5:0.5b` | The LLM model to use |
 | Max Retries | `3` | Max attempts to fix failing code |
 | Timeout | `10s` | Execution timeout |
 | Temperature | `0.1` | LLM creativity (lower = more deterministic) |
