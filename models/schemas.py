@@ -101,6 +101,7 @@ class AgentState(TypedDict, total=False):
         messages: Chat history for multi-turn conversations
         error_history: List of errors from previous attempts (for context)
         status: Current status of the agent workflow
+        parse_failures: Count of consecutive LLM response parse failures
     """
     
     original_code: str
@@ -112,3 +113,4 @@ class AgentState(TypedDict, total=False):
     messages: list[dict]
     error_history: list[str]
     status: Literal["reviewing", "fixing", "executing", "success", "failed"]
+    parse_failures: int
