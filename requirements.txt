@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt
 
 # Core Framework
-streamlit>=1.52.0          # Web UI framework
+customtkinter>=5.2.0       # Modern desktop UI framework
 langchain>=1.2.0           # LLM orchestration
 langchain-core>=1.2.0      # Core langchain components
 langchain-ollama>=0.3.0    # Ollama integration for LangChain

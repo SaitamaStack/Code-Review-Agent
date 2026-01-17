@@ -19,12 +19,37 @@ def test_parse():
     print(f"Testing with model: {config.model_name}")
     print(f"{'='*60}\n")
     
-    # Simple test code
+    # Buggy test code with known issues:
+    # - Line 8: IndexError when text is empty (words[0] on empty list)
+    # - Line 12: ZeroDivisionError when text is empty (len(words) = 0)
+    # - Line 20: CRITICAL SECURITY - eval() on file data
+    # - Line 24: Dead code - load_config() never called
     test_code = """
-def greet(name):
-    print("Hello, " + name)
+def analyze_text(text):
+    \"\"\"Analyze text and return statistics.\"\"\"
+    words = text.split()
+    
+    # BUG: IndexError if text is empty - words[0] fails
+    first_word = words[0]
+    last_word = words[-1]
+    
+    # BUG: ZeroDivisionError if text is empty - len(words) = 0
+    avg_length = sum(len(w) for w in words) / len(words)
+    
+    return {
+        "first": first_word,
+        "last": last_word,
+        "avg_length": avg_length
+    }
 
-greet("World")
+def load_config(filename):
+    # SECURITY BUG: eval() on untrusted file data
+    with open(filename) as f:
+        return eval(f.read())
+
+# Dead code: load_config is defined but never called
+result = analyze_text("hello world")
+print(result)
 """
     
     llm = create_llm()

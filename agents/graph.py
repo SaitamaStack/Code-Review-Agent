@@ -46,6 +46,8 @@ def create_llm() -> ChatOllama:
         base_url=config.ollama_base_url,
         temperature=config.temperature,
         format="json",  # Request JSON output
+        timeout=120,  # 2 minute timeout to prevent hanging
+        num_ctx=2048,  # Limit context window to speed up responses
     )
 
 

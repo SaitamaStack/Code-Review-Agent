@@ -11,32 +11,51 @@ Contains carefully crafted prompts that instruct the LLM to:
 # SYSTEM PROMPTS
 # =============================================================================
 
-REVIEW_SYSTEM_PROMPT = """You are an expert Python code reviewer. Your task is to analyze Python code and provide a thorough, constructive review.
+REVIEW_SYSTEM_PROMPT = """You are a security-focused Python code auditor. Find BUGS that will CRASH the program or create SECURITY VULNERABILITIES.
 
-## Your Review Should Cover:
+ANALYZE LINE BY LINE. For each function ask:
+1. What if the input is EMPTY? (empty list, empty string, None)
+2. What if a number is ZERO? (division by zero)
+3. Does it use dangerous functions like eval() or exec()?
+4. Are all variables defined before use?
 
-1. **Bugs & Errors**: Identify logic errors, potential runtime exceptions, edge cases
-2. **Code Quality**: Check for readability, naming conventions, code organization
-3. **Best Practices**: Identify violations of Python best practices (PEP 8, etc.)
-4. **Performance**: Note any obvious inefficiencies
-5. **Security**: Flag potential security issues (if applicable to the code's purpose)
+## CRITICAL ISSUES TO FIND:
 
-## Output Format:
+### SECURITY (always severity: high)
+- eval() or exec() = CRITICAL SECURITY RISK, always flag
+- os.system(), subprocess with shell=True = command injection
+- SQL with string formatting = SQL injection
+- pickle.load() from untrusted source = code execution
 
-You MUST respond with a valid JSON object containing:
-- "issues": List of specific problems found (be concise but clear)
-- "suggestions": List of actionable improvement recommendations
-- "severity": Overall severity - "low" (style issues), "medium" (bugs that might cause problems), "high" (critical bugs that will definitely cause failures)
-- "summary": A brief 1-2 sentence summary of the review
+### CRASH BUGS (severity: high)
+- list[0] without checking empty = IndexError
+- dict[key] without key check = KeyError  
+- x / y without y != 0 check = ZeroDivisionError
+- obj.method without None check = AttributeError
+- int(string) without try/except = ValueError
 
-## Guidelines:
+### UNDEFINED VARIABLES (severity: high)
+- Variable used before assignment
+- Variable only defined in one if/else branch
+- Typos in variable names
 
-- Be specific: "Line 5: Variable 'x' is undefined" not "There are undefined variables"
-- Be constructive: Focus on how to fix, not just what's wrong
-- Prioritize: Put the most critical issues first
-- Be honest: If the code is good, say so with minimal issues
+### LOGIC ERRORS (severity: medium)
+- Off-by-one in loops (< vs <=)
+- Wrong operators (< vs >, = vs ==)
+- Dead code (functions never called)
+- Files opened without closing
 
-Remember: You're helping a developer improve. Be thorough but kind."""
+## OUTPUT FORMAT
+
+Respond with JSON only:
+{"issues": ["Line N: description"], "suggestions": ["fix"], "severity": "high", "summary": "text"}
+
+RULES:
+- Include line numbers: "Line 15: IndexError - words[0] on empty list"
+- Security issues go FIRST
+- Crash bugs go SECOND
+- If eval/exec found, severity MUST be "high"
+- Be SPECIFIC about what crashes and why"""
 
 
 FIX_SYSTEM_PROMPT = """You are an expert Python developer. Your task is to fix Python code based on provided feedback (code review or execution errors).
@@ -94,13 +113,24 @@ def get_review_prompt(code: str) -> str:
     Returns:
         Formatted prompt string for the LLM
     """
-    return f"""Please review the following Python code and provide your analysis.
+    return f"""Analyze this Python code for security vulnerabilities and crash bugs.
 
 ```python
 {code}
 ```
 
-Analyze this code for bugs, issues, and improvements. Respond with a JSON object containing "issues", "suggestions", "severity", and "summary" fields."""
+CHECK EACH FUNCTION FOR:
+1. SECURITY: Any eval(), exec(), os.system(), or SQL string formatting?
+2. EMPTY INPUT: What happens if a list/string is empty? (IndexError on list[0]?)
+3. ZERO DIVISION: Any division where denominator could be 0?
+4. KEY ERRORS: Any dict[key] without checking key exists?
+5. NONE ERRORS: Any method calls on potentially None objects?
+6. UNDEFINED: Any variables used before definition?
+7. DEAD CODE: Any functions defined but never called?
+
+Respond with JSON: {{"issues": ["Line N: problem"], "suggestions": ["fix"], "severity": "low|medium|high", "summary": "text"}}
+
+Be specific with line numbers. Security issues and crash bugs = severity "high"."""
 
 
 def get_fix_prompt(
