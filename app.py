@@ -232,7 +232,7 @@ class CodeReviewApp(ctk.CTk):
             "Ollama Model",
             "model_entry",
             config.model_name,
-            "e.g., qwen3:1.7b, codellama",
+            "e.g., qwen3:14b, codellama",
             self.sidebar_scroll
         )
         
@@ -1018,7 +1018,7 @@ greet("World")'''
                     "Could not connect to Ollama.\n\n"
                     "Please ensure:\n"
                     "• Ollama is installed and running\n"
-                    "• The model is available (try: ollama pull qwen3:1.7b)\n"
+                    "• The model is available (try: ollama pull qwen3:14b)\n"
                     "• The URL is correct in settings\n\n"
                     f"Technical error: {error_msg}"
                 )

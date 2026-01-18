@@ -32,20 +32,40 @@ code-review-agent/
 
 ## 🚀 Quick Start
 
+## System Requirements
+
+**Hardware:**
+- **GPU**: NVIDIA GPU with 12GB+ VRAM (required)
+- **Tested on**: RTX 5070 (12GB), RTX 3060 (12GB), RTX 4060 Ti (16GB), RTX 3090 Ti (24GB)
+- **RAM**: 16GB+ system RAM recommended
+- **Storage**: ~15GB free space for model download
+
+**Software:**
+- Python 3.8+
+- Ollama installed and running
+- CUDA-compatible drivers (for NVIDIA GPUs)
+
+**Model:**
+- qwen3:14b (automatically downloaded on first run via Ollama)
+
+**Why qwen3:14b?**
+
+After benchmark analysis, qwen3:14b was selected as the minimum viable model for reliable code review:
+
+- Matches the performance of Qwen2.5-32B (2x its size) on coding benchmarks
+- Outperforms Qwen2.5-14B on STEM and coding tasks despite being a newer, more efficient architecture  
+- Testing revealed that models below 14b parameters struggled to consistently detect security vulnerabilities (like unsafe eval() usage) and complex runtime errors
+
+This model requires significant GPU resources and targets desktop workstations. It is not suitable for CPU-only systems or laptops without dedicated graphics cards.
+
 ### Prerequisites
 
-1. **Python 3.11+** installed
+1. **Python 3.8+** installed
 2. **Ollama** installed and running ([Install Ollama](https://ollama.ai/))
-3. A code model pulled in Ollama:
+3. Pull the required model:
 
 ```bash
-# Recommended model (lightweight, requires ~500MB RAM)
-ollama pull qwen2.5:0.5b
-
-# Alternative options (require more RAM)
-ollama pull qwen2.5:1.5b       # ~2GB RAM needed
-ollama pull qwen2.5:7b         # ~8GB RAM needed
-ollama pull codellama:7b       # ~8GB RAM needed
+ollama pull qwen3:14b
 ```
 
 ### Installation
@@ -83,7 +103,7 @@ Adjust settings in the sidebar:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Ollama Model | `qwen2.5:0.5b` | The LLM model to use |
+| Ollama Model | `qwen3:14b` | The LLM model to use |
 | Max Retries | `3` | Max attempts to fix failing code |
 | Timeout | `10s` | Execution timeout |
 | Temperature | `0.1` | LLM creativity (lower = more deterministic) |
