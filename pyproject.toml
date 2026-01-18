@@ -1,0 +1,57 @@
+[project]
+name = "code-review-agent"
+version = "1.0.0"
+description = "A privacy-first Python desktop application that reviews, explains, and iteratively fixes Python code using a self-healing agent loop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Christopher"}
+]
+keywords = ["code-review", "llm", "ollama", "langchain", "langgraph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "W291",   # trailing whitespace (minor)
+    "W293",   # blank line with whitespace (minor)
+    "F541",   # f-string missing placeholders (often intentional)
+    "E402",   # module import not at top (needed for some scripts)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agents", "models", "tools", "utils", "config"]
+
+[tool.coverage.run]
+source = ["agents", "tools", "models", "utils"]
+omit = ["tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

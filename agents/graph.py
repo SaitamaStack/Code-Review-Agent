@@ -16,17 +16,17 @@ from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from config import get_config
-from models.schemas import AgentState, CodeReview, FixedCode, ExecutionResult
-from tools.executor import execute_code_safely
 from agents.prompts import (
-    REVIEW_SYSTEM_PROMPT,
     FIX_SYSTEM_PROMPT,
-    get_review_prompt,
+    REVIEW_SYSTEM_PROMPT,
     get_fix_prompt,
+    get_review_prompt,
 )
+from config import get_config
+from models.schemas import AgentState, CodeReview, FixedCode
+from tools.executor import execute_code_safely
 
 # Configure logging for debugging LLM responses
 logging.basicConfig(level=logging.INFO)
@@ -93,7 +93,6 @@ def _fix_duplicate_keys_json(json_str: str) -> str:
     # Pattern: "key": "value"\n  "key": "value" -> keep last one
     
     lines = json_str.split('\n')
-    seen_keys = {}
     result_lines = []
     
     for i, line in enumerate(lines):

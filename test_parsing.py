@@ -5,13 +5,16 @@ Run with: python test_parsing.py
 """
 
 import logging
+
 logging.basicConfig(level=logging.INFO)
+
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.graph import create_llm, parse_json_response
 from agents.prompts import REVIEW_SYSTEM_PROMPT, get_review_prompt
-from models.schemas import CodeReview
-from langchain_core.messages import HumanMessage, SystemMessage
 from config import get_config
+from models.schemas import CodeReview
+
 
 def test_parse():
     config = get_config()

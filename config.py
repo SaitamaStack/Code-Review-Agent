@@ -9,6 +9,8 @@ This module centralizes all configurable parameters including:
 
 from dataclasses import dataclass, field
 
+__version__ = "1.0.0"
+
 
 @dataclass
 class Config:

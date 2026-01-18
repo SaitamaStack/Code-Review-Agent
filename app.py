@@ -7,20 +7,20 @@ fixes Python code using a self-healing agent loop. Fully offline.
 Run with: python app.py
 """
 
-import customtkinter as ctk
-import threading
 import difflib
 import sys
-import urllib.request
+import threading
 import urllib.error
+import urllib.request
 from tkinter import filedialog, messagebox
 
-from config import get_config, update_config
+import customtkinter as ctk
+
 from agents.graph import run_agent
+from config import get_config, update_config
 from models.schemas import AgentState
 from tools.executor import execute_code_safely
 from utils.helpers import format_code, get_timestamp
-
 
 # =============================================================================
 # OLLAMA STARTUP CHECK
@@ -231,7 +231,7 @@ class LoadingSpinner(ctk.CTkFrame):
         self.is_animating = False
         
         # Create dots
-        for i in range(3):
+        for _ in range(3):
             dot = ctk.CTkLabel(
                 self,
                 text="●",
@@ -1033,7 +1033,7 @@ greet("World")'''
         
         if filepath:
             try:
-                with open(filepath, "r", encoding="utf-8") as f:
+                with open(filepath, encoding="utf-8") as f:
                     content = f.read()
                 
                 self.code_input.delete("0.0", "end")
@@ -1210,7 +1210,8 @@ greet("World")'''
             self.after(0, lambda: self._update_execution_only(result))
             
         except Exception as e:
-            self.after(0, lambda: self._show_error(str(e)))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self._show_error(msg))
         
         finally:
             self.after(0, lambda: self._set_processing(False))

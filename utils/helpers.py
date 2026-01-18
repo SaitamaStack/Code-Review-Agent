@@ -6,7 +6,6 @@ Contains helper functions used across multiple modules for:
 - Time utilities
 """
 
-import re
 from datetime import datetime
 
 

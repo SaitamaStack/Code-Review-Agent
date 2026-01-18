@@ -6,6 +6,7 @@ that can be reliably processed by the agent pipeline.
 """
 
 from typing import Literal, TypedDict
+
 from pydantic import BaseModel, Field
 
 
