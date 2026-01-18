@@ -3,17 +3,10 @@
 
 # Core Framework
 customtkinter>=5.2.0       # Modern desktop UI framework
-langchain>=1.2.0           # LLM orchestration
-langchain-core>=1.2.0      # Core langchain components
-langchain-ollama>=0.3.0    # Ollama integration for LangChain
-langgraph>=1.0.0           # Agent state machine
+langchain>=0.2.0           # LLM orchestration
+langchain-core>=0.2.0      # Core langchain components
+langchain-ollama>=0.1.0    # Ollama integration for LangChain
+langgraph>=0.2.0           # Agent state machine
 
 # Data Validation
-pydantic>=2.12.0           # Structured output validation
-
-# Ollama Client (direct access if needed)
-ollama>=0.6.0              # Python client for Ollama
-
-# Utilities (typically included with above packages)
-tenacity>=9.0.0            # Retry logic
-PyYAML>=6.0.0              # Configuration files
+pydantic>=2.0.0            # Structured output validation

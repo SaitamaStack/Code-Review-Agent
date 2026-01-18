@@ -658,35 +658,3 @@ def run_agent(code: str) -> AgentState:
     return final_state
 
 
-def run_agent_stream(code: str):
-    """
-    Run the agent with streaming, yielding state updates.
-    
-    Useful for showing progress in the UI.
-    
-    Args:
-        code: Python source code to review and fix
-        
-    Yields:
-        AgentState updates after each node execution
-    """
-    graph = create_agent_graph()
-    
-    initial_state: AgentState = {
-        "original_code": code,
-        "current_code": code,
-        "review": None,
-        "fixed_code": None,
-        "execution_result": None,
-        "attempt": 0,
-        "messages": [{"role": "user", "content": f"Please review and fix this code:\n```python\n{code}\n```"}],
-        "error_history": [],
-        "status": "reviewing",
-        "parse_failures": 0,
-    }
-    
-    logger.info(f"=== STARTING AGENT STREAM ===")
-    
-    # Stream through the graph
-    for state_update in graph.stream(initial_state):
-        yield state_update

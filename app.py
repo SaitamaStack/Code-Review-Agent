@@ -11,7 +11,6 @@ import customtkinter as ctk
 import threading
 import difflib
 from tkinter import filedialog, messagebox
-from typing import Callable
 
 from config import get_config, update_config
 from agents.graph import run_agent

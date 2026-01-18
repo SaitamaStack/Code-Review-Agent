@@ -57,10 +57,6 @@ class Config:
         "ctypes",
         "multiprocessing",
     ])
-    
-    # UI Settings
-    max_code_display_lines: int = 100
-    enable_syntax_highlighting: bool = True
 
 
 # Global config instance - import this in other modules

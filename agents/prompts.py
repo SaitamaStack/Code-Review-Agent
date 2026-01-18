@@ -85,20 +85,6 @@ You MUST respond with a valid JSON object containing:
 If the code requires imports, include them at the top of the code section."""
 
 
-EVALUATE_SYSTEM_PROMPT = """You are evaluating the execution result of Python code. Based on the output or error, determine the next action.
-
-If successful:
-- Confirm the code works as expected
-- Summarize what the code does and its output
-
-If failed:
-- Analyze the error message
-- Identify the root cause
-- Suggest specific fixes needed
-
-Be concise and actionable in your response."""
-
-
 # =============================================================================
 # PROMPT TEMPLATES
 # =============================================================================
@@ -197,40 +183,3 @@ def get_fix_prompt(
     ])
     
     return "\n".join(prompt_parts)
-
-
-def get_refinement_prompt(
-    original_code: str,
-    current_code: str,
-    user_request: str,
-) -> str:
-    """
-    Generate a prompt for refining code based on user feedback.
-    
-    Used for multi-turn conversations where the user asks for
-    additional changes after the initial review/fix cycle.
-    
-    Args:
-        original_code: The user's original submitted code
-        current_code: The current (possibly fixed) version
-        user_request: The user's refinement request
-        
-    Returns:
-        Formatted prompt string for the LLM
-    """
-    return f"""The user has requested changes to the code.
-
-## Original Code:
-```python
-{original_code}
-```
-
-## Current Code:
-```python
-{current_code}
-```
-
-## User Request:
-{user_request}
-
-Please modify the current code according to the user's request. Respond with a JSON object containing "code", "explanation", and "changes_made" fields."""

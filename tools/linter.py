@@ -1,10 +1,9 @@
 """
-Code safety and linting utilities using AST analysis.
+Code safety utilities using AST analysis.
 
 Provides static analysis to:
 - Detect blocked/dangerous imports before execution
 - Basic syntax validation
-- Optional style checks
 """
 
 import ast
@@ -112,82 +111,3 @@ def check_code_safety(code: str) -> dict[str, Any]:
         "reason": None,
         "blocked_imports": [],
     }
-
-
-def lint_code(code: str) -> dict[str, Any]:
-    """
-    Perform basic linting and syntax validation on Python code.
-    
-    Checks for:
-    - Syntax errors
-    - Common issues detectable via AST
-    
-    Args:
-        code: Python source code to lint
-        
-    Returns:
-        dict with keys:
-            - valid (bool): True if code is syntactically valid
-            - errors (list[str]): List of error messages
-            - warnings (list[str]): List of warning messages
-    """
-    errors: list[str] = []
-    warnings: list[str] = []
-    
-    # Step 1: Check for syntax errors
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        return {
-            "valid": False,
-            "errors": [f"Syntax error at line {e.lineno}: {e.msg}"],
-            "warnings": [],
-        }
-    
-    # Step 2: Basic AST analysis for common issues
-    for node in ast.walk(tree):
-        # Warn about bare except clauses
-        if isinstance(node, ast.ExceptHandler):
-            if node.type is None:
-                warnings.append(
-                    f"Line {node.lineno}: Bare 'except:' clause - consider catching specific exceptions"
-                )
-        
-        # Warn about mutable default arguments
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for default in node.args.defaults + node.args.kw_defaults:
-                if default and isinstance(default, (ast.List, ast.Dict, ast.Set)):
-                    warnings.append(
-                        f"Line {node.lineno}: Function '{node.name}' has mutable default argument"
-                    )
-        
-        # Warn about unused variables (basic check - variables assigned but never used)
-        # This is a simplified check; full analysis would require scope tracking
-        
-    return {
-        "valid": True,
-        "errors": errors,
-        "warnings": warnings,
-    }
-
-
-def get_syntax_error_details(code: str) -> dict[str, Any] | None:
-    """
-    Get detailed information about a syntax error in code.
-    
-    Args:
-        code: Python source code with potential syntax error
-        
-    Returns:
-        dict with error details or None if no syntax error
-    """
-    try:
-        ast.parse(code)
-        return None
-    except SyntaxError as e:
-        return {
-            "line": e.lineno,
-            "column": e.offset,
-            "message": e.msg,
-            "text": e.text,
-        }

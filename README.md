@@ -1,6 +1,6 @@
 # 🔍 Local Code Review & Fix Agent
 
-A privacy-first Python web application that reviews, explains, and iteratively fixes Python code using a self-healing agent loop. **Fully offline** — no cloud APIs required.
+A privacy-first Python desktop application that reviews, explains, and iteratively fixes Python code using a self-healing agent loop. **Fully offline** — no cloud APIs required.
 
 ## ✨ Features
 
@@ -8,25 +8,36 @@ A privacy-first Python web application that reviews, explains, and iteratively f
 - **🔄 Self-Healing Loop**: Automatically retries fixing code until it executes successfully.
 - **📋 Detailed Reviews**: Get comprehensive code reviews with issues, suggestions, and severity ratings.
 - **🚀 Sandboxed Execution**: Safely execute code with timeout protection and blocked imports.
-- **💬 Chat Interface**: Intuitive Streamlit-based chat UI for interaction.
+- **🖥️ Modern Desktop UI**: Beautiful dark-themed CustomTkinter interface.
 
-## 🏗️ Architecture
+## 🛠️ Tech Stack
+
+- **[CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)** - Modern desktop UI framework
+- **[LangGraph](https://langchain-ai.github.io/langgraph/)** - Agent state machine for review-fix-execute workflow
+- **[Ollama](https://ollama.ai/)** - Local LLM inference
+- **[Pydantic](https://docs.pydantic.dev/)** - Structured LLM output validation
+
+## 🏗️ Project Structure
 
 ```
 code-review-agent/
-├── app.py                    # Streamlit entry point
+├── app.py                    # CustomTkinter desktop application
 ├── config.py                 # Settings (model name, max retries, timeout)
+├── requirements.txt          # Python dependencies
+├── test_parsing.py           # LLM response parsing test utility
 ├── agents/
+│   ├── __init__.py           # Package exports
 │   ├── graph.py              # LangGraph state machine
 │   └── prompts.py            # System prompts for review/fix tasks
 ├── tools/
+│   ├── __init__.py           # Package exports
 │   ├── executor.py           # Safe code execution (subprocess, tempfile)
 │   └── linter.py             # AST-based safety checks
 ├── models/
+│   ├── __init__.py           # Package exports
 │   └── schemas.py            # Pydantic models for structured outputs
-├── ui/
-│   └── components.py         # Reusable Streamlit components
 └── utils/
+    ├── __init__.py           # Package exports
     └── helpers.py            # Shared utilities
 ```
 
@@ -74,7 +85,7 @@ ollama pull qwen3:14b
 # Clone the repository (or navigate to the project)
 cd code-review-agent
 
-# Create virtual environment (optional but recommended)
+# Create virtual environment (recommended)
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
@@ -85,17 +96,17 @@ pip install -r requirements.txt
 ### Running the App
 
 ```bash
-streamlit run app.py
+python app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+The desktop application will launch with a dark-themed interface.
 
 ## 📖 Usage
 
-1. **Enter Code**: Paste your Python code in the text area or upload a `.py` file.
+1. **Enter Code**: Paste your Python code in the text area or click "Upload File" to load a `.py` file.
 2. **Review & Fix**: Click the "🔍 Review & Fix" button to start the agent.
-3. **View Results**: See the review, fixes, and execution results in separate tabs.
-4. **Iterate**: Make follow-up requests in the chat to refine the code.
+3. **View Results**: See the review, fixes, execution results, and diff in separate tabs.
+4. **Execute Only**: Use "🚀 Execute Only" to run code without review.
 
 ## ⚙️ Configuration
 
@@ -104,8 +115,9 @@ Adjust settings in the sidebar:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Ollama Model | `qwen3:14b` | The LLM model to use |
+| Ollama Base URL | `http://localhost:11434` | Ollama server address |
 | Max Retries | `3` | Max attempts to fix failing code |
-| Timeout | `10s` | Execution timeout |
+| Timeout | `10s` | Execution timeout per attempt |
 | Temperature | `0.1` | LLM creativity (lower = more deterministic) |
 
 ## 🔒 Security
@@ -119,7 +131,7 @@ The executor blocks potentially dangerous imports:
 
 Code is executed in an isolated subprocess with strict timeout enforcement.
 
-## 🔄 Agent Flow
+## 🔄 Agent Workflow
 
 ```
 START → review → fix → execute → evaluate
@@ -129,36 +141,16 @@ START → review → fix → execute → evaluate
                                    END (success or max retries)
 ```
 
-## 🛠️ Development
-
-### Project Structure
-
-- **`config.py`**: Centralized configuration with sensible defaults
-- **`models/schemas.py`**: Pydantic models for type-safe LLM outputs
-- **`tools/executor.py`**: Sandboxed code execution
-- **`tools/linter.py`**: AST-based safety analysis
-- **`agents/graph.py`**: LangGraph state machine with retry logic
-- **`agents/prompts.py`**: Carefully crafted system prompts
-- **`ui/components.py`**: Reusable Streamlit UI components
-- **`app.py`**: Main Streamlit application
-
-### Extending the Agent
-
-To add new capabilities:
-
-1. Add new nodes in `agents/graph.py`
-2. Define new Pydantic schemas in `models/schemas.py`
-3. Create UI components in `ui/components.py`
-4. Update prompts in `agents/prompts.py`
+The agent uses LangGraph to orchestrate a self-healing loop:
+1. **Review**: LLM analyzes code for bugs and security issues
+2. **Fix**: LLM generates corrected code based on review
+3. **Execute**: Code runs in sandboxed subprocess
+4. **Evaluate**: Check results, retry if needed
 
 ## 📝 License
 
 MIT License - Feel free to use and modify for your projects.
 
-## 🤝 Contributing
-
-Contributions welcome! Please feel free to submit issues and pull requests.
-
 ---
 
-**Built with** ❤️ **using Streamlit, LangChain, LangGraph, and Ollama**
+**Built with** ❤️ **using CustomTkinter, LangChain, LangGraph, and Ollama**
