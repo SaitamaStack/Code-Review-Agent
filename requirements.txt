@@ -10,3 +10,9 @@ langgraph>=0.2.0           # Agent state machine
 
 # Data Validation
 pydantic>=2.0.0            # Structured output validation
+
+# HTTP Client (required by langchain-ollama)
+httpx>=0.24.0              # Async HTTP client
+
+# Build Tools (optional - for creating executables)
+# pip install pyinstaller  # Uncomment to install for building .exe

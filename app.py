@@ -10,6 +10,9 @@ Run with: python app.py
 import customtkinter as ctk
 import threading
 import difflib
+import sys
+import urllib.request
+import urllib.error
 from tkinter import filedialog, messagebox
 
 from config import get_config, update_config
@@ -17,6 +20,175 @@ from agents.graph import run_agent
 from models.schemas import AgentState
 from tools.executor import execute_code_safely
 from utils.helpers import format_code, get_timestamp
+
+
+# =============================================================================
+# OLLAMA STARTUP CHECK
+# =============================================================================
+
+def check_ollama_running() -> tuple[bool, str]:
+    """
+    Check if Ollama is running and accessible.
+    
+    Returns:
+        tuple: (is_running: bool, error_message: str)
+    """
+    config = get_config()
+    ollama_url = config.ollama_base_url
+    
+    try:
+        # Try to connect to Ollama's API endpoint
+        req = urllib.request.Request(
+            f"{ollama_url}/api/tags",
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                return True, ""
+    except urllib.error.URLError as e:
+        return False, f"Connection failed: {e.reason}"
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP error: {e.code}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+    
+    return False, "Unknown error"
+
+
+def show_ollama_error_dialog():
+    """
+    Display a user-friendly error dialog when Ollama is not running.
+    
+    This creates a standalone dialog window that explains:
+    - What Ollama is
+    - How to install it
+    - That it needs to be running before launching this app
+    """
+    import webbrowser
+    
+    # Create a simple root window for the dialog
+    root = ctk.CTk()
+    root.withdraw()  # Hide the main window
+    
+    # Create error dialog
+    dialog = ctk.CTkToplevel(root)
+    dialog.title("Ollama Not Detected")
+    dialog.geometry("520x420")
+    dialog.resizable(False, False)
+    
+    # Center the dialog on screen
+    dialog.update_idletasks()
+    x = (dialog.winfo_screenwidth() - 520) // 2
+    y = (dialog.winfo_screenheight() - 420) // 2
+    dialog.geometry(f"520x420+{x}+{y}")
+    
+    # Make it modal and stay on top
+    dialog.transient(root)
+    dialog.grab_set()
+    dialog.lift()
+    dialog.attributes('-topmost', True)
+    
+    # Configure appearance
+    dialog.configure(fg_color="#1a1a2e")
+    
+    # Icon/Title
+    title_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    title_frame.pack(pady=(30, 20))
+    
+    icon_label = ctk.CTkLabel(
+        title_frame,
+        text="⚠️",
+        font=ctk.CTkFont(size=48)
+    )
+    icon_label.pack()
+    
+    title_label = ctk.CTkLabel(
+        title_frame,
+        text="Ollama Not Running",
+        font=ctk.CTkFont(size=24, weight="bold"),
+        text_color="#f0f0f0"
+    )
+    title_label.pack(pady=(10, 0))
+    
+    # Message
+    message_frame = ctk.CTkFrame(dialog, fg_color="#252542", corner_radius=12)
+    message_frame.pack(fill="x", padx=30, pady=10)
+    
+    message_text = (
+        "This application requires Ollama to run local AI models.\n\n"
+        "Ollama is a free, open-source tool that runs large language\n"
+        "models locally on your machine — no cloud required.\n\n"
+        "To use this app:\n"
+        "  1. Download and install Ollama\n"
+        "  2. Open a terminal and run: ollama pull qwen3:14b\n"
+        "  3. Ensure Ollama is running (it starts automatically)\n"
+        "  4. Launch this app again"
+    )
+    
+    message_label = ctk.CTkLabel(
+        message_frame,
+        text=message_text,
+        font=ctk.CTkFont(size=13),
+        text_color="#c0c0c0",
+        justify="left",
+        anchor="w"
+    )
+    message_label.pack(padx=20, pady=20)
+    
+    # Buttons frame
+    button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    button_frame.pack(pady=20)
+    
+    def open_ollama_website():
+        webbrowser.open("https://ollama.com")
+    
+    def close_app():
+        dialog.destroy()
+        root.destroy()
+        sys.exit(0)
+    
+    download_btn = ctk.CTkButton(
+        button_frame,
+        text="Download Ollama",
+        font=ctk.CTkFont(size=14, weight="bold"),
+        fg_color="#4a90d9",
+        hover_color="#3a7bc8",
+        width=180,
+        height=42,
+        corner_radius=8,
+        command=open_ollama_website
+    )
+    download_btn.pack(side="left", padx=(0, 15))
+    
+    exit_btn = ctk.CTkButton(
+        button_frame,
+        text="Exit",
+        font=ctk.CTkFont(size=14, weight="bold"),
+        fg_color="#4a4a5a",
+        hover_color="#5a5a6a",
+        width=120,
+        height=42,
+        corner_radius=8,
+        command=close_app
+    )
+    exit_btn.pack(side="left")
+    
+    # URL label
+    url_label = ctk.CTkLabel(
+        dialog,
+        text="https://ollama.com",
+        font=ctk.CTkFont(size=12, underline=True),
+        text_color="#4a90d9",
+        cursor="hand2"
+    )
+    url_label.pack(pady=(5, 20))
+    url_label.bind("<Button-1>", lambda e: open_ollama_website())
+    
+    # Handle window close
+    dialog.protocol("WM_DELETE_WINDOW", close_app)
+    
+    # Run the dialog
+    dialog.mainloop()
 
 
 # =============================================================================
@@ -1268,6 +1440,25 @@ greet("World")'''
 # APPLICATION ENTRY POINT
 # =============================================================================
 
-if __name__ == "__main__":
+def main():
+    """
+    Main entry point for the application.
+    
+    Checks for Ollama availability before launching the UI.
+    Shows a user-friendly error dialog if Ollama is not running.
+    """
+    # Check if Ollama is running
+    is_running, error_msg = check_ollama_running()
+    
+    if not is_running:
+        # Show error dialog and exit
+        show_ollama_error_dialog()
+        return
+    
+    # Ollama is running, launch the main application
     app = CodeReviewApp()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
