@@ -47,7 +47,7 @@ def create_llm() -> ChatOllama:
         temperature=config.temperature,
         format="json",  # Request JSON output
         timeout=180,  # 3 minute timeout for thorough analysis
-        num_ctx=8192,  # Larger context window for better code analysis
+        num_ctx=6144,  # 6K context window - optimal balance for code analysis
     )
 
 
