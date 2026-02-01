@@ -347,6 +347,21 @@ The agent uses LangGraph to orchestrate a self-healing loop:
 
 ---
 
+## 📝 Changelog
+
+### v1.1.0 (Latest)
+- **Improved bug detection**: Enhanced prompts with exhaustive checklist approach
+- **Expanded bug categories**: Now detects mutable defaults, Pydantic errors, threading bugs, mutation issues
+- **Optimized context window**: Increased from 2K to 6K tokens for better analysis
+- **Better coverage**: Catches spelling errors, syntax issues, type errors, and shared state bugs
+
+### v1.0.0
+- Initial release
+- Basic code review and fix functionality
+- Desktop GUI with CustomTkinter
+
+---
+
 ## 📝 License
 
 MIT License - Feel free to use and modify for your projects.
