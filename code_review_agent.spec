@@ -17,7 +17,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # Application metadata
 APP_NAME = "CodeReviewAgent"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # Collect all submodules for packages that PyInstaller often misses
 # LangGraph and LangChain have complex import structures

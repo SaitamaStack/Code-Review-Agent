@@ -1,6 +1,6 @@
 [project]
 name = "code-review-agent"
-version = "1.0.0"
+version = "1.1.0"
 description = "A privacy-first Python desktop application that reviews, explains, and iteratively fixes Python code using a self-healing agent loop"
 readme = "README.md"
 requires-python = ">=3.10"
