@@ -115,8 +115,9 @@ After benchmark analysis, **qwen3:14b** was selected as the minimum viable model
 - Matches performance of Qwen2.5-32B on coding benchmarks
 - Reliably detects security vulnerabilities and runtime errors
 - 14B parameters is the sweet spot for accuracy vs. speed
+- Uses 8K context window for thorough code analysis
 
-> ⚠️ **Note**: This model requires a dedicated GPU. CPU-only systems will be extremely slow.
+> ⚠️ **Note**: This model requires a dedicated GPU. CPU-only systems will be extremely slow. The 8K context window provides better bug detection but uses more VRAM (~8-10GB) and processes slower than smaller contexts.
 
 ---
 
