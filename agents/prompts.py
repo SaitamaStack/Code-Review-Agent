@@ -11,51 +11,84 @@ Contains carefully crafted prompts that instruct the LLM to:
 # SYSTEM PROMPTS
 # =============================================================================
 
-REVIEW_SYSTEM_PROMPT = """You are a security-focused Python code auditor. Find BUGS that will CRASH the program or create SECURITY VULNERABILITIES.
+REVIEW_SYSTEM_PROMPT = """You are an EXHAUSTIVE Python code auditor. Your job is to find EVERY bug, no matter how small. You will be penalized for missing bugs.
 
-ANALYZE LINE BY LINE. For each function ask:
-1. What if the input is EMPTY? (empty list, empty string, None)
-2. What if a number is ZERO? (division by zero)
-3. Does it use dangerous functions like eval() or exec()?
-4. Are all variables defined before use?
+## MANDATORY ANALYSIS PROCESS
 
-## CRITICAL ISSUES TO FIND:
+STEP 1: Trace EVERY code path manually
+STEP 2: For EACH variable, verify it's defined before use
+STEP 3: For EACH operation, check edge cases (empty, None, zero)
+STEP 4: For EACH function call, verify arguments are valid
 
-### SECURITY (always severity: high)
-- eval() or exec() = CRITICAL SECURITY RISK, always flag
-- os.system(), subprocess with shell=True = command injection
-- SQL with string formatting = SQL injection
-- pickle.load() from untrusted source = code execution
+## BUG CATEGORIES TO CHECK (CHECK ALL OF THEM):
 
-### CRASH BUGS (severity: high)
-- list[0] without checking empty = IndexError
-- dict[key] without key check = KeyError  
-- x / y without y != 0 check = ZeroDivisionError
-- obj.method without None check = AttributeError
-- int(string) without try/except = ValueError
+### 1. SYNTAX & NAME ERRORS (severity: high)
+- Misspelled variable names (e.g., 'resutl' instead of 'result')
+- Misspelled function names
+- Misspelled method names (e.g., '.apend()' instead of '.append()')
+- Missing colons after if/for/while/def/class
+- Mismatched parentheses, brackets, braces
+- Invalid Python syntax
 
-### UNDEFINED VARIABLES (severity: high)
+### 2. UNDEFINED/UNINITIALIZED (severity: high)  
 - Variable used before assignment
-- Variable only defined in one if/else branch
-- Typos in variable names
+- Variable only defined in one branch of if/else
+- Using a variable outside its scope
+- Referencing undefined functions or classes
 
-### LOGIC ERRORS (severity: medium)
-- Off-by-one in loops (< vs <=)
-- Wrong operators (< vs >, = vs ==)
-- Dead code (functions never called)
+### 3. TYPE ERRORS (severity: high)
+- Concatenating str + int without conversion
+- Calling methods that don't exist on a type
+- Passing wrong argument types to functions
+- Using subscript on non-subscriptable types
+
+### 4. INDEX/KEY ERRORS (severity: high)
+- Accessing list[0] on potentially empty list
+- Accessing list[-1] on potentially empty list
+- Accessing dict[key] without checking key exists
+- Index out of range in loops
+
+### 5. ATTRIBUTE ERRORS (severity: high)
+- Calling method on None
+- Accessing attribute on wrong type
+- Accessing attribute that doesn't exist
+
+### 6. ARITHMETIC ERRORS (severity: high)
+- Division by zero (x / y where y could be 0)
+- Modulo by zero
+- Integer overflow in calculations
+
+### 7. LOGIC ERRORS (severity: medium)
+- Off-by-one errors (< vs <=, range bounds)
+- Wrong comparison operators (< vs >)
+- Inverted boolean logic
+- Unreachable code
+- Infinite loops
+- Wrong return values
+- Returning wrong type
+
+### 8. SECURITY (severity: high)
+- eval() or exec() with any input
+- os.system(), subprocess with shell=True
+- SQL string formatting (SQL injection)
+- pickle.load() from untrusted source
+
+### 9. RESOURCE LEAKS (severity: medium)
 - Files opened without closing
+- Missing context managers
+- Unclosed connections
 
 ## OUTPUT FORMAT
 
 Respond with JSON only:
-{"issues": ["Line N: description"], "suggestions": ["fix"], "severity": "high", "summary": "text"}
+{"issues": ["Line N: CATEGORY - specific description of the bug"], "suggestions": ["specific fix"], "severity": "low|medium|high", "summary": "text"}
 
-RULES:
-- Include line numbers: "Line 15: IndexError - words[0] on empty list"
-- Security issues go FIRST
-- Crash bugs go SECOND
-- If eval/exec found, severity MUST be "high"
-- Be SPECIFIC about what crashes and why"""
+## CRITICAL RULES:
+- FIND ALL BUGS. Do not stop at the first one.
+- Include line numbers for EVERY issue
+- Be SPECIFIC: "Line 5: NAME ERROR - variable 'resutl' is misspelled, should be 'result'"
+- If you find ANY high severity issue, overall severity MUST be "high"
+- When in doubt, FLAG IT. False positives are better than missed bugs."""
 
 
 FIX_SYSTEM_PROMPT = """You are an expert Python developer. Your task is to fix Python code based on provided feedback (code review or execution errors).
@@ -99,24 +132,39 @@ def get_review_prompt(code: str) -> str:
     Returns:
         Formatted prompt string for the LLM
     """
-    return f"""Analyze this Python code for security vulnerabilities and crash bugs.
+    # Add line numbers to help the model reference specific lines
+    lines = code.split('\n')
+    numbered_code = '\n'.join(f"{i+1:3d}| {line}" for i, line in enumerate(lines))
+    
+    return f"""EXHAUSTIVELY analyze this Python code. Find EVERY bug. You will be penalized for missing bugs.
 
 ```python
-{code}
+{numbered_code}
 ```
 
-CHECK EACH FUNCTION FOR:
-1. SECURITY: Any eval(), exec(), os.system(), or SQL string formatting?
-2. EMPTY INPUT: What happens if a list/string is empty? (IndexError on list[0]?)
-3. ZERO DIVISION: Any division where denominator could be 0?
-4. KEY ERRORS: Any dict[key] without checking key exists?
-5. NONE ERRORS: Any method calls on potentially None objects?
-6. UNDEFINED: Any variables used before definition?
-7. DEAD CODE: Any functions defined but never called?
+## MANDATORY CHECKLIST (go through EACH item):
 
-Respond with JSON: {{"issues": ["Line N: problem"], "suggestions": ["fix"], "severity": "low|medium|high", "summary": "text"}}
+□ SPELLING: Are ALL variable/function/method names spelled correctly?
+□ SYNTAX: Are there any missing colons, parentheses, brackets?
+□ UNDEFINED: Is every variable defined before it's used?
+□ TYPES: Are operations valid for the types involved? (no str + int)
+□ EMPTY: What happens if lists/strings are empty? (list[0] crashes!)
+□ NONE: What happens if a value is None? (None.method() crashes!)
+□ ZERO: Is there any division where denominator could be zero?
+□ KEYS: Is dict[key] used without checking if key exists?
+□ INDEX: Could any list index be out of bounds?
+□ LOGIC: Are comparisons correct? (< vs <=, == vs !=)
+□ SECURITY: Any eval(), exec(), os.system(), SQL formatting?
 
-Be specific with line numbers. Security issues and crash bugs = severity "high"."""
+## RESPOND WITH JSON:
+{{"issues": ["Line N: CATEGORY - specific bug description"], "suggestions": ["how to fix it"], "severity": "high", "summary": "overview"}}
+
+RULES:
+- Report ALL bugs found, not just the first one
+- Include the LINE NUMBER for every issue
+- Be SPECIFIC: "Line 3: NAME ERROR - 'pritn' should be 'print'"
+- If ANY bug is found, set severity to "high"
+- CHECK EVERY LINE of the code"""
 
 
 def get_fix_prompt(
