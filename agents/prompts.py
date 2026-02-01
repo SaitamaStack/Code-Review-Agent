@@ -78,6 +78,32 @@ STEP 4: For EACH function call, verify arguments are valid
 - Missing context managers
 - Unclosed connections
 
+### 10. MUTABLE DEFAULT ARGUMENTS (severity: high)
+- Function with default list: def foo(items=[]) - ALWAYS A BUG
+- Function with default dict: def foo(data={}) - ALWAYS A BUG
+- Dataclass with mutable default: field: list = [] - MUST use field(default_factory=list)
+- Dataclass with dict default: field: dict = {} - MUST use field(default_factory=dict)
+- These cause shared state between calls/instances!
+
+### 11. PYDANTIC/FRAMEWORK ERRORS (severity: high)
+- Pydantic @validator missing cls as first parameter
+- Pydantic @field_validator missing cls as first parameter
+- Pydantic validator not decorated with @classmethod when needed
+- Wrong Pydantic version syntax (v1 vs v2 differences)
+
+### 12. THREADING/CONCURRENCY BUGS (severity: high)
+- Tkinter GUI updates from non-main thread (causes crashes!)
+- Must use .after() or queue for cross-thread GUI updates
+- Race conditions with shared variables
+- Missing locks on shared resources
+
+### 13. MUTATION & SHARED STATE BUGS (severity: high)
+- Function modifies input dict/list instead of making a copy
+- Class variable (not instance variable) that gets mutated
+- Module-level mutable state shared between calls
+- Returning internal mutable state that caller can modify
+- Not using .copy() or copy.deepcopy() when needed
+
 ## OUTPUT FORMAT
 
 Respond with JSON only:
@@ -88,7 +114,15 @@ Respond with JSON only:
 - Include line numbers for EVERY issue
 - Be SPECIFIC: "Line 5: NAME ERROR - variable 'resutl' is misspelled, should be 'result'"
 - If you find ANY high severity issue, overall severity MUST be "high"
-- When in doubt, FLAG IT. False positives are better than missed bugs."""
+- When in doubt, FLAG IT. False positives are better than missed bugs.
+
+## COMMONLY MISSED BUGS (CHECK THESE CAREFULLY):
+- def func(items=[]): is ALWAYS wrong - mutable default argument!
+- def func(data={}): is ALWAYS wrong - mutable default argument!
+- @dataclass with field: list = [] is ALWAYS wrong - use field(default_factory=list)
+- Pydantic @validator without cls first param is ALWAYS wrong
+- Any tkinter widget.config() or widget.insert() from a thread is ALWAYS wrong
+- Modifying a dict/list passed as argument without .copy() is usually wrong"""
 
 
 FIX_SYSTEM_PROMPT = """You are an expert Python developer. Your task is to fix Python code based on provided feedback (code review or execution errors).
@@ -155,6 +189,12 @@ def get_review_prompt(code: str) -> str:
 □ INDEX: Could any list index be out of bounds?
 □ LOGIC: Are comparisons correct? (< vs <=, == vs !=)
 □ SECURITY: Any eval(), exec(), os.system(), SQL formatting?
+□ MUTABLE DEFAULTS: Any function with def foo(x=[]) or def foo(d={{}})? ALWAYS A BUG!
+□ DATACLASS DEFAULTS: Any dataclass with field: list = [] or field: dict = {{}}? Use field(default_factory=...)!
+□ PYDANTIC: Any @validator or @field_validator missing cls parameter?
+□ TKINTER THREADING: Any GUI updates (.config, .insert, etc.) from non-main thread?
+□ MUTATION: Does any function modify its input dict/list instead of copying?
+□ SHARED STATE: Any class variables or module globals that get mutated?
 
 ## RESPOND WITH JSON:
 {{"issues": ["Line N: CATEGORY - specific bug description"], "suggestions": ["how to fix it"], "severity": "high", "summary": "overview"}}
