@@ -25,49 +25,85 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y python3-tk
     
-    - name: Install system dependencies (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        brew install python-tk
-    
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
     
-    - name: Build executable
+    - name: Build executable (Windows)
+      if: matrix.os == 'windows-latest'
       run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          pyinstaller code_review_agent.spec --clean --noconfirm
-        else
-          pyinstaller code_review_agent.spec --clean --noconfirm
-          chmod +x dist/CodeReviewAgent
-        fi
+        pyinstaller code_review_agent.spec --clean --noconfirm
     
-    - name: Determine artifact name
-      id: artifact
+    - name: Build executable (Linux/macOS)
+      if: matrix.os != 'windows-latest'
       run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          echo "name=CodeReviewAgent.exe" >> $GITHUB_OUTPUT
-          echo "path=dist/CodeReviewAgent.exe" >> $GITHUB_OUTPUT
-        elif [ "$RUNNER_OS" == "macOS" ]; then
-          echo "name=CodeReviewAgent-macOS" >> $GITHUB_OUTPUT
-          echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
-        else
-          echo "name=CodeReviewAgent-Linux" >> $GITHUB_OUTPUT
-          echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
-        fi
+        pyinstaller code_review_agent.spec --clean --noconfirm
+        chmod +x dist/CodeReviewAgent
     
-    - name: Upload artifact
+    - name: Determine artifact name (Windows)
+      if: matrix.os == 'windows-latest'
+      id: artifact-win
+      run: |
+        echo "name=CodeReviewAgent.exe" >> $GITHUB_OUTPUT
+        echo "path=dist/CodeReviewAgent.exe" >> $GITHUB_OUTPUT
+    
+    - name: Determine artifact name (macOS)
+      if: matrix.os == 'macos-latest'
+      id: artifact-mac
+      run: |
+        echo "name=CodeReviewAgent-macOS" >> $GITHUB_OUTPUT
+        echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
+    
+    - name: Determine artifact name (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      id: artifact-linux
+      run: |
+        echo "name=CodeReviewAgent-Linux" >> $GITHUB_OUTPUT
+        echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
+    
+    - name: Upload artifact (Windows)
+      if: matrix.os == 'windows-latest'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ steps.artifact.outputs.name }}
-        path: ${{ steps.artifact.outputs.path }}
+        name: ${{ steps.artifact-win.outputs.name }}
+        path: ${{ steps.artifact-win.outputs.path }}
     
-    - name: Upload to release
+    - name: Upload artifact (macOS)
+      if: matrix.os == 'macos-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact-mac.outputs.name }}
+        path: ${{ steps.artifact-mac.outputs.path }}
+    
+    - name: Upload artifact (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact-linux.outputs.name }}
+        path: ${{ steps.artifact-linux.outputs.path }}
+    
+    - name: Upload to release (Windows)
+      if: matrix.os == 'windows-latest'
       uses: softprops/action-gh-release@v1
       with:
-        files: ${{ steps.artifact.outputs.path }}
+        files: ${{ steps.artifact-win.outputs.path }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload to release (macOS)
+      if: matrix.os == 'macos-latest'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ steps.artifact-mac.outputs.path }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload to release (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ steps.artifact-linux.outputs.path }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
