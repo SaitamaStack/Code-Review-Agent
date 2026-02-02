@@ -8,7 +8,16 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact-name: CodeReviewAgent-Linux
+            exe-path: dist/CodeReviewAgent
+          - os: windows-latest
+            artifact-name: CodeReviewAgent.exe
+            exe-path: dist/CodeReviewAgent.exe
+          - os: macos-latest
+            artifact-name: CodeReviewAgent-macOS
+            exe-path: dist/CodeReviewAgent
     runs-on: ${{ matrix.os }}
     
     steps:
@@ -31,79 +40,20 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
     
-    - name: Build executable (Windows)
-      if: matrix.os == 'windows-latest'
-      run: |
-        pyinstaller code_review_agent.spec --clean --noconfirm
-    
     - name: Build executable (Linux/macOS)
       if: matrix.os != 'windows-latest'
       run: |
         pyinstaller code_review_agent.spec --clean --noconfirm
         chmod +x dist/CodeReviewAgent
     
-    - name: Determine artifact name (Windows)
+    - name: Build executable (Windows)
       if: matrix.os == 'windows-latest'
-      id: artifact-win
       run: |
-        echo "name=CodeReviewAgent.exe" >> $GITHUB_OUTPUT
-        echo "path=dist/CodeReviewAgent.exe" >> $GITHUB_OUTPUT
+        pyinstaller code_review_agent.spec --clean --noconfirm
     
-    - name: Determine artifact name (macOS)
-      if: matrix.os == 'macos-latest'
-      id: artifact-mac
-      run: |
-        echo "name=CodeReviewAgent-macOS" >> $GITHUB_OUTPUT
-        echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
-    
-    - name: Determine artifact name (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      id: artifact-linux
-      run: |
-        echo "name=CodeReviewAgent-Linux" >> $GITHUB_OUTPUT
-        echo "path=dist/CodeReviewAgent" >> $GITHUB_OUTPUT
-    
-    - name: Upload artifact (Windows)
-      if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.artifact-win.outputs.name }}
-        path: ${{ steps.artifact-win.outputs.path }}
-    
-    - name: Upload artifact (macOS)
-      if: matrix.os == 'macos-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.artifact-mac.outputs.name }}
-        path: ${{ steps.artifact-mac.outputs.path }}
-    
-    - name: Upload artifact (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.artifact-linux.outputs.name }}
-        path: ${{ steps.artifact-linux.outputs.path }}
-    
-    - name: Upload to release (Windows)
-      if: matrix.os == 'windows-latest'
+    - name: Upload to release
       uses: softprops/action-gh-release@v1
       with:
-        files: ${{ steps.artifact-win.outputs.path }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Upload to release (macOS)
-      if: matrix.os == 'macos-latest'
-      uses: softprops/action-gh-release@v1
-      with:
-        files: ${{ steps.artifact-mac.outputs.path }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Upload to release (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      uses: softprops/action-gh-release@v1
-      with:
-        files: ${{ steps.artifact-linux.outputs.path }}
+        files: ${{ matrix.exe-path }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
