@@ -20,9 +20,10 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller
       - run: pyinstaller code_review_agent.spec --clean --noconfirm
       - run: chmod +x dist/CodeReviewAgent
+      - run: mv dist/CodeReviewAgent dist/CodeReviewAgent-Linux
       - uses: softprops/action-gh-release@v1
         with:
-          files: dist/CodeReviewAgent
+          files: dist/CodeReviewAgent-Linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -61,8 +62,9 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller
       - run: pyinstaller code_review_agent.spec --clean --noconfirm
       - run: chmod +x dist/CodeReviewAgent
+      - run: mv dist/CodeReviewAgent dist/CodeReviewAgent-macOS
       - uses: softprops/action-gh-release@v1
         with:
-          files: dist/CodeReviewAgent
+          files: dist/CodeReviewAgent-macOS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
