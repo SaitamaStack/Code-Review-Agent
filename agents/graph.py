@@ -9,6 +9,7 @@ Implements the following workflow:
                                        END (success or max retries)
 """
 
+import ast
 import json
 import logging
 import re
@@ -19,9 +20,7 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
 from agents.prompts import (
-    FIX_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
-    get_fix_prompt,
     get_review_prompt,
 )
 from config import get_config
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 def create_llm() -> ChatOllama:
     """
     Create and configure the Ollama LLM instance.
-    
+
     Returns:
         ChatOllama: Configured LLM for code review/fix tasks
     """
@@ -51,11 +50,31 @@ def create_llm() -> ChatOllama:
     )
 
 
+def create_fix_llm() -> ChatOllama:
+    """
+    Create and configure the Ollama LLM instance for surgical code fixing.
+
+    Does not set format="json" because the fix node expects raw Python output,
+    not a JSON-wrapped response.
+
+    Returns:
+        ChatOllama: Configured LLM for surgical per-issue code patching
+    """
+    config = get_config()
+    return ChatOllama(
+        model=config.model_name,
+        base_url=config.ollama_base_url,
+        temperature=config.temperature,
+        timeout=180,
+        num_ctx=6144,
+    )
+
+
 def _normalize_to_string_list(items: list) -> list[str]:
     """
     Convert a list of items (strings or dicts) to a list of strings.
-    
-    Some models return structured objects like {"line": 5, "description": "..."} 
+
+    Some models return structured objects like {"line": 5, "description": "..."}
     instead of plain strings. This normalizes them.
     """
     result = []
@@ -85,16 +104,16 @@ def _normalize_to_string_list(items: list) -> list[str]:
 def _fix_duplicate_keys_json(json_str: str) -> str:
     """
     Attempt to fix JSON with duplicate keys by keeping only the last occurrence.
-    
+
     Some models output duplicate keys when they "correct" themselves mid-generation.
     This is a best-effort repair.
     """
     # Remove duplicate consecutive key-value pairs
     # Pattern: "key": "value"\n  "key": "value" -> keep last one
-    
-    lines = json_str.split('\n')
+
+    lines = json_str.split("\n")
     result_lines = []
-    
+
     for i, line in enumerate(lines):
         # Check if this line starts a key
         key_match = re.match(r'\s*"(\w+)":', line)
@@ -107,26 +126,26 @@ def _fix_duplicate_keys_json(json_str: str) -> str:
                     # Skip this line, keep the next one
                     continue
         result_lines.append(line)
-    
-    return '\n'.join(result_lines)
+
+    return "\n".join(result_lines)
 
 
 def _adapt_response_to_schema(data: dict, model_class: type) -> dict:
     """
     Adapt parsed JSON data to match the expected schema.
-    
+
     Handles cases where the model returns a different structure than expected,
     like objects instead of strings for list fields.
     """
     from models.schemas import CodeReview, FixedCode
-    
+
     if model_class == CodeReview:
         # Normalize issues and suggestions to string lists
         if "issues" in data and isinstance(data["issues"], list):
             data["issues"] = _normalize_to_string_list(data["issues"])
         if "suggestions" in data and isinstance(data["suggestions"], list):
             data["suggestions"] = _normalize_to_string_list(data["suggestions"])
-        
+
         # Ensure severity is valid
         if "severity" in data:
             severity = str(data["severity"]).lower()
@@ -134,31 +153,31 @@ def _adapt_response_to_schema(data: dict, model_class: type) -> dict:
                 data["severity"] = "medium"
             else:
                 data["severity"] = severity
-        
+
         # Ensure summary is a string
         if "summary" in data and not isinstance(data["summary"], str):
             data["summary"] = str(data["summary"])
-    
+
     elif model_class == FixedCode:
         # Normalize changes_made to string list
         if "changes_made" in data and isinstance(data["changes_made"], list):
             data["changes_made"] = _normalize_to_string_list(data["changes_made"])
-        
+
         # Ensure code is a string
         if "code" in data and not isinstance(data["code"], str):
             data["code"] = str(data["code"])
-    
+
     return data
 
 
 def parse_json_response(response: str, model_class: type) -> dict | None:
     """
     Parse JSON from LLM response, handling common issues across different models.
-    
+
     Args:
         response: Raw LLM response string
         model_class: Pydantic model class for validation
-        
+
     Returns:
         Parsed dict or None if parsing fails
     """
@@ -166,13 +185,13 @@ def parse_json_response(response: str, model_class: type) -> dict | None:
     logger.info(f"=== RAW LLM RESPONSE (first 1000 chars) ===")
     logger.info(response[:1000] if len(response) > 1000 else response)
     logger.info(f"=== END RAW RESPONSE (total length: {len(response)}) ===")
-    
+
     # Clean the response - some models add thinking tags or extra whitespace
     cleaned = response.strip()
-    
+
     # Pre-processing: Try to fix duplicate keys
     cleaned = _fix_duplicate_keys_json(cleaned)
-    
+
     def try_parse_and_validate(json_str: str, source: str) -> dict | None:
         """Helper to parse JSON and validate against schema with adaptation."""
         try:
@@ -187,67 +206,77 @@ def parse_json_response(response: str, model_class: type) -> dict | None:
         except Exception as e:
             logger.debug(f"Validation failed ({source}): {e}")
         return None
-    
+
     # Strategy 1: Try direct JSON parsing
     result = try_parse_and_validate(cleaned, "direct parsing")
     if result:
         return result
-    
+
     # Strategy 2: Extract JSON from markdown code blocks
     json_patterns = [
-        r'```json\s*([\s\S]*?)```',
-        r'```\s*([\s\S]*?)```',
-        r'`([\s\S]*?)`',
+        r"```json\s*([\s\S]*?)```",
+        r"```\s*([\s\S]*?)```",
+        r"`([\s\S]*?)`",
     ]
-    
+
     for pattern in json_patterns:
         matches = re.findall(pattern, cleaned, re.IGNORECASE)
         for match in matches:
-            result = try_parse_and_validate(match.strip(), f"code block ({pattern[:15]}...)")
+            result = try_parse_and_validate(
+                match.strip(), f"code block ({pattern[:15]}...)"
+            )
             if result:
                 return result
-    
+
     # Strategy 3: Find JSON object by looking for { ... } structure
-    first_brace = cleaned.find('{')
-    last_brace = cleaned.rfind('}')
-    
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        potential_json = cleaned[first_brace:last_brace + 1]
+        potential_json = cleaned[first_brace : last_brace + 1]
         result = try_parse_and_validate(potential_json, "brace extraction")
         if result:
             return result
-    
+
     # Strategy 4: Handle thinking tags
     thinking_patterns = [
-        r'<think>[\s\S]*?</think>',
-        r'<thinking>[\s\S]*?</thinking>',
-        r'<reasoning>[\s\S]*?</reasoning>',
+        r"<think>[\s\S]*?</think>",
+        r"<thinking>[\s\S]*?</thinking>",
+        r"<reasoning>[\s\S]*?</reasoning>",
     ]
-    
+
     cleaned_no_thinking = cleaned
     for pattern in thinking_patterns:
-        cleaned_no_thinking = re.sub(pattern, '', cleaned_no_thinking, flags=re.IGNORECASE)
-    
+        cleaned_no_thinking = re.sub(
+            pattern, "", cleaned_no_thinking, flags=re.IGNORECASE
+        )
+
     if cleaned_no_thinking != cleaned:
         cleaned_no_thinking = cleaned_no_thinking.strip()
-        
-        result = try_parse_and_validate(cleaned_no_thinking, "after removing thinking tags")
+
+        result = try_parse_and_validate(
+            cleaned_no_thinking, "after removing thinking tags"
+        )
         if result:
             return result
-        
+
         # Try brace extraction on cleaned content
-        first_brace = cleaned_no_thinking.find('{')
-        last_brace = cleaned_no_thinking.rfind('}')
+        first_brace = cleaned_no_thinking.find("{")
+        last_brace = cleaned_no_thinking.rfind("}")
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            potential_json = cleaned_no_thinking[first_brace:last_brace + 1]
-            result = try_parse_and_validate(potential_json, "braces after removing thinking")
+            potential_json = cleaned_no_thinking[first_brace : last_brace + 1]
+            result = try_parse_and_validate(
+                potential_json, "braces after removing thinking"
+            )
             if result:
                 return result
-    
+
     # All strategies failed
     logger.error(f"✗ ALL PARSING STRATEGIES FAILED for model {model_class.__name__}")
     logger.error(f"Response started with: {response[:200]}")
-    logger.error(f"Response ended with: {response[-200:] if len(response) > 200 else response}")
+    logger.error(
+        f"Response ended with: {response[-200:] if len(response) > 200 else response}"
+    )
     return None
 
 
@@ -255,10 +284,11 @@ def parse_json_response(response: str, model_class: type) -> dict | None:
 # GRAPH NODES
 # =============================================================================
 
+
 def review_node(state: AgentState) -> AgentState:
     """
     Review the submitted code and identify issues.
-    
+
     This node:
     1. Sends code to LLM for review
     2. Parses structured CodeReview response
@@ -266,140 +296,220 @@ def review_node(state: AgentState) -> AgentState:
     """
     config = get_config()
     llm = create_llm()
-    
+
     logger.info(f"=== REVIEW NODE: Calling LLM ({config.model_name}) ===")
-    
+
     messages = [
         SystemMessage(content=REVIEW_SYSTEM_PROMPT),
         HumanMessage(content=get_review_prompt(state["current_code"])),
     ]
-    
+
     response = llm.invoke(messages)
-    
+
     logger.info(f"=== REVIEW NODE: Got response, parsing... ===")
-    
+
     # Parse the response into CodeReview
     review_data = parse_json_response(response.content, CodeReview)
-    
+
     # Track parse failures in state for detecting stuck loops
     parse_failures = state.get("parse_failures", 0)
-    
+
     if review_data:
         review = CodeReview(**review_data)
-        logger.info(f"✓ Review parsed successfully: {review.summary[:100] if review.summary else 'no summary'}")
+        logger.info(
+            f"✓ Review parsed successfully: {review.summary[:100] if review.summary else 'no summary'}"
+        )
     else:
         # Fallback if parsing fails
         parse_failures += 1
         logger.warning(f"✗ Review parsing failed (failure #{parse_failures})")
         review = CodeReview(
             issues=["Could not parse LLM response - check logs for raw output"],
-            suggestions=["The model may not be producing valid JSON. Try a different model."],
+            suggestions=[
+                "The model may not be producing valid JSON. Try a different model."
+            ],
             severity="medium",
             summary=f"Review parsing failed (attempt #{parse_failures})",
         )
-    
+
     return {
         **state,
         "review": review,
         "status": "reviewing",
         "parse_failures": parse_failures,
-        "messages": state.get("messages", []) + [
-            {"role": "assistant", "content": f"Review: {review.summary}"}
-        ],
+        "messages": state.get("messages", [])
+        + [{"role": "assistant", "content": f"Review: {review.summary}"}],
     }
 
 
 def fix_node(state: AgentState) -> AgentState:
     """
-    Generate fixed code based on review feedback or execution errors.
-    
-    This node:
-    1. Constructs prompt with review/error context
-    2. Sends to LLM for code fixing
-    3. Updates state with fixed code
+    Apply one fix per invocation using surgical per-issue patching.
+
+    Processes state["current_issue_index"] from review.issues. After each
+    model response, AST validation confirms that no top-level definitions were
+    removed. Retries up to 3 times per issue before skipping to the next.
     """
     config = get_config()
-    llm = create_llm()
-    
-    attempt = state.get("attempt", 0)
-    parse_failures = state.get("parse_failures", 0)
-    
-    logger.info(f"=== FIX NODE: Calling LLM ({config.model_name}) - Attempt {attempt + 1} ===")
-    
-    # Build context for the fix
-    review_dict = state["review"].model_dump() if state.get("review") else None
-    error = state["execution_result"].error if state.get("execution_result") else None
-    previous_errors = state.get("error_history", [])
-    
+    llm = create_fix_llm()
+
+    issues = state["review"].issues
+    current_issue_index = state.get("current_issue_index", 0)
+    ast_retry_count = state.get("ast_retry_count", 0)
+    rejected_fixes = state.get("rejected_fixes", [])
+    fix_results = state.get("fix_results", [])
+
+    issue = issues[current_issue_index]
+
+    logger.info(
+        f"=== FIX NODE ({config.model_name}): "
+        f"Issue {current_issue_index + 1}/{len(issues)}, "
+        f"AST attempt {ast_retry_count + 1} ==="
+    )
+    logger.info(f"Issue: {issue}")
+
+    user_message = (
+        "You are a surgical code patch applier. Your only job is to apply one specific fix to the code below.\n\n"
+        "RULES:\n"
+        "- Modify ONLY the code directly involved in the issue described below.\n"
+        "- You MUST preserve every function, class, method, and import that exists in the original code.\n"
+        "- Do NOT remove, rename, restructure, or rewrite anything that is not directly part of the fix.\n"
+        "- Do NOT add explanatory comments, docstrings, or inline notes.\n"
+        "- Do NOT include any explanation, summary, or description in your response.\n"
+        "- Return ONLY the complete fixed Python file. Nothing before it, nothing after it.\n\n"
+        f"ISSUE TO FIX:\n{issue}\n\n"
+        "ORIGINAL CODE (source of truth — your output must contain everything in here, "
+        f"minus only what the fix requires changing):\n{state['current_code']}"
+    )
+
+    if rejected_fixes:
+        user_message += f"\n\nPREVIOUS ATTEMPT REJECTED:\n{rejected_fixes[-1]}"
+
     messages = [
-        SystemMessage(content=FIX_SYSTEM_PROMPT),
-        HumanMessage(content=get_fix_prompt(
-            code=state["current_code"],
-            review=review_dict,
-            error=error,
-            previous_attempts=previous_errors if previous_errors else None,
-        )),
+        SystemMessage(
+            content=(
+                "You are a precise code patch applier. You output only valid Python code. "
+                "You never delete existing functionality. You never explain your changes."
+            )
+        ),
+        HumanMessage(content=user_message),
     ]
-    
+
     response = llm.invoke(messages)
-    
-    logger.info(f"=== FIX NODE: Got response, parsing... ===")
-    
-    # Parse the response into FixedCode
-    fix_data = parse_json_response(response.content, FixedCode)
-    
-    if fix_data:
-        fixed = FixedCode(**fix_data)
-        new_code = fixed.code
-        logger.info(f"✓ Fix parsed successfully: {fixed.explanation[:100] if fixed.explanation else 'no explanation'}")
-    else:
-        # Parsing failed - increment counter and try to extract code anyway
-        parse_failures += 1
-        logger.warning(f"✗ Fix parsing failed (failure #{parse_failures})")
-        
-        # Try harder to extract code from the response
-        extracted_code = _extract_code_from_response(response.content)
-        
-        if extracted_code and extracted_code != state["current_code"]:
-            logger.info(f"✓ Extracted code from response despite JSON parse failure")
-            fixed = FixedCode(
-                code=extracted_code,
-                explanation="Code extracted from non-JSON response",
-                changes_made=["Extracted from LLM response"],
-            )
-            new_code = extracted_code
-        else:
-            logger.warning(f"✗ Could not extract code, keeping original")
-            fixed = FixedCode(
-                code=state["current_code"],
-                explanation=f"Could not parse LLM response (failure #{parse_failures})",
-                changes_made=[],
-            )
-            new_code = state["current_code"]
-    
-    # Check for excessive parse failures - this indicates a stuck loop
-    max_parse_failures = config.max_retries * 2  # Allow some failures but not infinite
-    if parse_failures >= max_parse_failures:
-        logger.error(f"✗ Too many parse failures ({parse_failures}), marking as failed")
+    output = response.content.strip()
+
+    logger.info(
+        f"=== FIX NODE: Got response ({len(output)} chars), running AST validation... ==="
+    )
+
+    # Extract top-level definition names from original_code as the reference set.
+    try:
+        original_tree = ast.parse(state["original_code"])
+        original_definitions = {
+            node.name
+            for node in original_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+    except SyntaxError:
+        original_definitions = set()
+
+    # Validate the model's output.
+    missing: set[str] = set()
+    syntax_error = False
+    try:
+        output_tree = ast.parse(output)
+        output_definitions = {
+            node.name
+            for node in output_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        missing = original_definitions - output_definitions
+    except SyntaxError:
+        syntax_error = True
+
+    if not syntax_error and not missing:
+        # Validation passed — accept the fix and advance to the next issue.
+        logger.info(f"✓ AST validation passed for issue {current_issue_index + 1}")
+        new_fix_results = fix_results + [{"issue": issue, "status": "success"}]
+        successful_issues = [
+            r["issue"] for r in new_fix_results if r["status"] == "success"
+        ]
+        new_fixed_code = FixedCode(
+            code=output,
+            explanation=f"Applied {len(successful_issues)} fix(es) out of {len(issues)} issues",
+            changes_made=successful_issues,
+        )
         return {
             **state,
-            "current_code": new_code,
-            "fixed_code": fixed,
-            "status": "failed",  # Force exit from the loop
-            "parse_failures": parse_failures,
-            "messages": state.get("messages", []) + [
-                {"role": "assistant", "content": f"Fix failed: Too many parsing errors. The model may not be producing valid JSON."}
+            "current_code": output,
+            "fixed_code": new_fixed_code,
+            "current_issue_index": current_issue_index + 1,
+            "ast_retry_count": 0,
+            "rejected_fixes": [],
+            "fix_results": new_fix_results,
+            "status": "fixing",
+            "messages": state.get("messages", [])
+            + [
+                {
+                    "role": "assistant",
+                    "content": f"Fixed issue {current_issue_index + 1}/{len(issues)}: {issue}",
+                }
             ],
         }
-    
+
+    # Validation failed.
+    new_ast_retry_count = ast_retry_count + 1
+    logger.warning(
+        f"✗ AST validation failed for issue {current_issue_index + 1} "
+        f"(attempt {new_ast_retry_count})"
+    )
+
+    if new_ast_retry_count < 3:
+        if syntax_error:
+            rejection = (
+                f"Attempt {new_ast_retry_count} for issue '{issue}' was rejected because "
+                f"the output contained a syntax error. Return only valid Python."
+            )
+        else:
+            rejection = (
+                f"Attempt {new_ast_retry_count} for issue '{issue}' was rejected because "
+                f"the following definitions were removed from the output: {missing}. "
+                f"You must not remove these."
+            )
+        logger.info(
+            f"→ Retrying issue {current_issue_index + 1} (attempt {new_ast_retry_count + 1})"
+        )
+        return {
+            **state,
+            "ast_retry_count": new_ast_retry_count,
+            "rejected_fixes": rejected_fixes + [rejection],
+            "status": "fixing",
+        }
+
+    # All 3 attempts exhausted — skip this issue and move on.
+    logger.error(
+        f"✗ Skipping issue {current_issue_index + 1} after 3 failed AST validation attempts"
+    )
+    new_fix_results = fix_results + [
+        {
+            "issue": issue,
+            "status": "failed",
+            "reason": "AST validation failed after 3 attempts",
+        }
+    ]
     return {
         **state,
-        "current_code": new_code,
-        "fixed_code": fixed,
+        "current_issue_index": current_issue_index + 1,
+        "ast_retry_count": 0,
+        "rejected_fixes": [],
+        "fix_results": new_fix_results,
         "status": "fixing",
-        "parse_failures": parse_failures,
-        "messages": state.get("messages", []) + [
-            {"role": "assistant", "content": f"Fix: {fixed.explanation}"}
+        "messages": state.get("messages", [])
+        + [
+            {
+                "role": "assistant",
+                "content": f"Skipped issue {current_issue_index + 1}/{len(issues)} after 3 failed attempts: {issue}",
+            }
         ],
     }
 
@@ -407,64 +517,67 @@ def fix_node(state: AgentState) -> AgentState:
 def _extract_code_from_response(response: str) -> str | None:
     """
     Try to extract Python code from a response even if JSON parsing failed.
-    
+
     This handles cases where the model outputs code in markdown blocks
     but doesn't follow the expected JSON structure.
     """
     # Try to find Python code blocks
     patterns = [
-        r'```python\s*([\s\S]*?)```',
-        r'```py\s*([\s\S]*?)```',
-        r'```\s*([\s\S]*?)```',
+        r"```python\s*([\s\S]*?)```",
+        r"```py\s*([\s\S]*?)```",
+        r"```\s*([\s\S]*?)```",
     ]
-    
+
     for pattern in patterns:
         matches = re.findall(pattern, response, re.IGNORECASE)
         for match in matches:
             code = match.strip()
             # Basic validation - should look like Python code
             if code and (
-                'def ' in code or
-                'class ' in code or
-                'import ' in code or
-                'print(' in code or
-                '=' in code
+                "def " in code
+                or "class " in code
+                or "import " in code
+                or "print(" in code
+                or "=" in code
             ):
                 logger.info(f"Extracted code block ({len(code)} chars)")
                 return code
-    
+
     # Try to find code in a "code" field even if overall JSON is malformed
-    code_field_match = re.search(r'"code"\s*:\s*"((?:[^"\\]|\\.)*)"|\'code\'\s*:\s*\'((?:[^\'\\]|\\.)*)\'', response)
+    code_field_match = re.search(
+        r'"code"\s*:\s*"((?:[^"\\]|\\.)*)"|\'code\'\s*:\s*\'((?:[^\'\\]|\\.)*)\'',
+        response,
+    )
     if code_field_match:
         code = code_field_match.group(1) or code_field_match.group(2)
         if code:
             # Unescape the string
             try:
-                code = code.encode().decode('unicode_escape')
+                code = code.encode().decode("unicode_escape")
                 logger.info(f"Extracted code from 'code' field ({len(code)} chars)")
                 return code
             except Exception:
                 pass
-    
+
     return None
 
 
 def execute_node(state: AgentState) -> AgentState:
     """
     Execute the current code in a sandboxed environment.
-    
+
     This node:
     1. Runs code through the safe executor
     2. Captures execution results
     3. Updates state with results
     """
     result = execute_code_safely(state["current_code"])
-    
+
     # Track error history for context in retries
     error_history = state.get("error_history", [])
     if not result.success and result.error:
         error_history = error_history + [result.error]
-    
+
     return {
         **state,
         "execution_result": result,
@@ -476,7 +589,7 @@ def execute_node(state: AgentState) -> AgentState:
 def evaluate_node(state: AgentState) -> AgentState:
     """
     Evaluate execution results and determine next action.
-    
+
     This node:
     1. Checks if execution was successful
     2. Updates attempt counter
@@ -486,50 +599,64 @@ def evaluate_node(state: AgentState) -> AgentState:
     result = state.get("execution_result")
     attempt = state.get("attempt", 0)
     parse_failures = state.get("parse_failures", 0)
-    
+
     logger.info(f"=== EVALUATE NODE ===")
     logger.info(f"Attempt: {attempt + 1}/{config.max_retries}")
     logger.info(f"Parse failures so far: {parse_failures}")
     logger.info(f"Execution success: {result.success if result else 'N/A'}")
-    
+
     if result and result.success:
         logger.info(f"✓ Execution successful, ending workflow")
         return {
             **state,
             "status": "success",
-            "messages": state.get("messages", []) + [
-                {"role": "assistant", "content": f"✅ Code executed successfully! Output: {result.output}"}
+            "messages": state.get("messages", [])
+            + [
+                {
+                    "role": "assistant",
+                    "content": f"✅ Code executed successfully! Output: {result.output}",
+                }
             ],
         }
-    
+
     # Execution failed
     new_attempt = attempt + 1
-    
+
     # Check if we're in a stuck loop (parse failures but no progress)
     if parse_failures > 0 and new_attempt > 1:
         # Check if code hasn't changed - indicates we're stuck
         if state.get("current_code") == state.get("original_code"):
-            logger.warning(f"✗ Detected stuck loop: code unchanged after {new_attempt} attempts with {parse_failures} parse failures")
+            logger.warning(
+                f"✗ Detected stuck loop: code unchanged after {new_attempt} attempts with {parse_failures} parse failures"
+            )
             return {
                 **state,
                 "attempt": new_attempt,
                 "status": "failed",
-                "messages": state.get("messages", []) + [
-                    {"role": "assistant", "content": f"❌ Stuck loop detected: LLM responses could not be parsed. Try a different model or check the logs."}
+                "messages": state.get("messages", [])
+                + [
+                    {
+                        "role": "assistant",
+                        "content": f"❌ Stuck loop detected: LLM responses could not be parsed. Try a different model or check the logs.",
+                    }
                 ],
             }
-    
+
     if new_attempt >= config.max_retries:
         logger.info(f"✗ Max retries reached ({config.max_retries}), marking as failed")
         return {
             **state,
             "attempt": new_attempt,
             "status": "failed",
-            "messages": state.get("messages", []) + [
-                {"role": "assistant", "content": f"❌ Max retries ({config.max_retries}) reached. Last error: {result.error if result else 'Unknown'}"}
+            "messages": state.get("messages", [])
+            + [
+                {
+                    "role": "assistant",
+                    "content": f"❌ Max retries ({config.max_retries}) reached. Last error: {result.error if result else 'Unknown'}",
+                }
             ],
         }
-    
+
     logger.info(f"→ Will retry (attempt {new_attempt + 1})")
     return {
         **state,
@@ -542,18 +669,36 @@ def evaluate_node(state: AgentState) -> AgentState:
 # GRAPH EDGES (Routing Logic)
 # =============================================================================
 
+
+def should_fix_continue(state: AgentState) -> Literal["fix", "execute"]:
+    """
+    Route after the fix node.
+
+    Returns "fix" while there are still issues remaining in review.issues,
+    or "execute" once all issues have been processed (or skipped).
+    """
+    review = state.get("review")
+    if review is None:
+        return "execute"
+
+    current_index = state.get("current_issue_index", 0)
+    if current_index < len(review.issues):
+        return "fix"
+    return "execute"
+
+
 def should_continue(state: AgentState) -> Literal["fix", "end"]:
     """
     Determine whether to retry fixing or end the workflow.
-    
+
     Returns:
         "fix" to retry, "end" to finish
     """
     status = state.get("status", "")
-    
+
     if status in ("success", "failed"):
         return "end"
-    
+
     return "fix"
 
 
@@ -561,62 +706,70 @@ def should_continue(state: AgentState) -> Literal["fix", "end"]:
 # GRAPH CONSTRUCTION
 # =============================================================================
 
+
 def create_agent_graph() -> StateGraph:
     """
     Create the LangGraph state machine for code review and fix.
-    
+
     Graph structure:
         START → review → fix → execute → evaluate
                                   ↑          ↓
                                   └── retry ←┘
                                              ↓
                                             END
-    
+
     Returns:
         Compiled StateGraph ready for execution
     """
     # Initialize the graph with our state schema
     workflow = StateGraph(AgentState)
-    
+
     # Add nodes
     workflow.add_node("review", review_node)
     workflow.add_node("fix", fix_node)
     workflow.add_node("execute", execute_node)
     workflow.add_node("evaluate", evaluate_node)
-    
+
     # Set entry point
     workflow.set_entry_point("review")
-    
+
     # Add edges for the main flow
     workflow.add_edge("review", "fix")
-    workflow.add_edge("fix", "execute")
+    workflow.add_conditional_edges(
+        "fix",
+        should_fix_continue,
+        {
+            "fix": "fix",  # More issues remain — loop back
+            "execute": "execute",  # All issues processed — proceed
+        },
+    )
     workflow.add_edge("execute", "evaluate")
-    
+
     # Add conditional edge for retry logic
     workflow.add_conditional_edges(
         "evaluate",
         should_continue,
         {
             "fix": "fix",  # Retry: go back to fix
-            "end": END,    # Done: end workflow
-        }
+            "end": END,  # Done: end workflow
+        },
     )
-    
+
     return workflow.compile()
 
 
 def run_agent(code: str) -> AgentState:
     """
     Run the code review and fix agent on the given code.
-    
+
     This is the main entry point for using the agent.
-    
+
     Args:
         code: Python source code to review and fix
-        
+
     Returns:
         Final AgentState with review, fixed code, and execution results
-        
+
     Example:
         result = run_agent("print('Hello World')")
         if result["status"] == "success":
@@ -628,7 +781,7 @@ def run_agent(code: str) -> AgentState:
     """
     # Create the graph
     graph = create_agent_graph()
-    
+
     # Initialize state
     initial_state: AgentState = {
         "original_code": code,
@@ -637,23 +790,30 @@ def run_agent(code: str) -> AgentState:
         "fixed_code": None,
         "execution_result": None,
         "attempt": 0,
-        "messages": [{"role": "user", "content": f"Please review and fix this code:\n```python\n{code}\n```"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": f"Please review and fix this code:\n```python\n{code}\n```",
+            }
+        ],
         "error_history": [],
         "status": "reviewing",
         "parse_failures": 0,
+        "current_issue_index": 0,
+        "ast_retry_count": 0,
+        "rejected_fixes": [],
+        "fix_results": [],
     }
-    
+
     logger.info(f"=== STARTING AGENT RUN ===")
     logger.info(f"Code length: {len(code)} chars")
-    
+
     # Run the graph
     final_state = graph.invoke(initial_state)
-    
+
     logger.info(f"=== AGENT RUN COMPLETE ===")
     logger.info(f"Final status: {final_state.get('status')}")
     logger.info(f"Total parse failures: {final_state.get('parse_failures', 0)}")
     logger.info(f"Total attempts: {final_state.get('attempt', 0)}")
-    
+
     return final_state
-
-
