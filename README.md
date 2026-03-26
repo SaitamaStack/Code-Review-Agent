@@ -349,7 +349,13 @@ The agent uses LangGraph to orchestrate a self-healing loop:
 
 ## 📝 Changelog
 
-### v1.1.0 (Latest)
+### v1.2.0 (Latest)
+- **Surgical per-issue fix loop**: Agent now fixes each detected issue individually rather than all at once, improving precision and reducing regressions
+- **AST validation**: Generated fixes are validated against the AST before being applied, with automatic retry on invalid output
+- **Dedicated fix LLM**: Separate LLM configuration for the fix step (raw Python output, no JSON mode) for cleaner code generation
+- **Improved state tracking**: New `current_issue_index`, `ast_retry_count`, `rejected_fixes`, and `fix_results` fields for finer-grained progress tracking
+
+### v1.1.0
 - **Improved bug detection**: Enhanced prompts with exhaustive checklist approach
 - **Expanded bug categories**: Now detects mutable defaults, Pydantic errors, threading bugs, mutation issues
 - **Optimized context window**: Increased from 2K to 6K tokens for better analysis
