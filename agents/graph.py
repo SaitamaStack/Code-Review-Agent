@@ -734,7 +734,9 @@ def create_agent_graph() -> StateGraph:
     workflow.set_entry_point("review")
 
     # Add edges for the main flow
-    workflow.add_edge("review", "fix")
+    workflow.add_conditional_edges(
+        "review", should_fix_continue, {"fix": "fix", "execute": "execute"}
+    )
     workflow.add_conditional_edges(
         "fix",
         should_fix_continue,
