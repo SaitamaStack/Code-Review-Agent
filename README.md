@@ -349,11 +349,17 @@ The agent uses LangGraph to orchestrate a self-healing loop:
 
 ## 📝 Changelog
 
-### v1.2.0 (Latest)
+### v1.3.0 (Latest)
+- **Patch-based code fixing**: Fix node now requests a line-range patch object (`line_start`, `line_end`, `replacement`) instead of a full file rewrite, preventing the model from modifying code outside the targeted lines
+- **New `PatchResult` schema**: Structured output contract that scopes fixes to specific lines, eliminating the class of bugs where the model deletes code to pass validation
+- **Reliable JSON output for fixes**: Re-enabled `format="json"` on the fix LLM now that the output contract is a JSON patch object rather than raw Python
+- **Fixed crash on zero issues**: Graph now skips the fix node entirely when the review finds no issues, resolving an index error introduced in v1.2.0
+
+### v1.2.0
 - **Surgical per-issue fix loop**: Agent now fixes each detected issue individually rather than all at once, improving precision and reducing regressions
 - **AST validation**: Generated fixes are validated against the AST before being applied, with automatic retry on invalid output
-- **Dedicated fix LLM**: Separate LLM configuration for the fix step (raw Python output, no JSON mode) for cleaner code generation
-- **Improved state tracking**: New `current_issue_index`, `ast_retry_count`, `rejected_fixes`, and `fix_results` fields for finer-grained progress tracking
+- **Dedicated fix LLM**: Separate LLM configuration for the fix step for cleaner code generation
+- **Improved state tracking**: New `current_issue_index`, `patch_retry_count`, `rejected_patches`, and `fix_results` fields for finer-grained progress tracking
 
 ### v1.1.0
 - **Improved bug detection**: Enhanced prompts with exhaustive checklist approach
