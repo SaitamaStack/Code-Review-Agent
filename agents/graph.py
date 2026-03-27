@@ -645,11 +645,18 @@ def evaluate_node(state: AgentState) -> AgentState:
             ],
         }
 
-    logger.info(f"→ Will retry (attempt {new_attempt + 1})")
+    logger.info(f"✗ Execution failed after fixes, marking as failed")
     return {
         **state,
         "attempt": new_attempt,
-        "status": "fixing",  # Will trigger retry
+        "status": "failed",
+        "messages": state.get("messages", [])
+        + [
+            {
+                "role": "assistant",
+                "content": f"❌ Execution failed after applying fixes. Last error: {result.error if result else 'Unknown'}",
+            }
+        ],
     }
 
 
@@ -673,21 +680,6 @@ def should_fix_continue(state: AgentState) -> Literal["fix", "execute"]:
     if current_index < len(review.issues):
         return "fix"
     return "execute"
-
-
-def should_continue(state: AgentState) -> Literal["fix", "end"]:
-    """
-    Determine whether to retry fixing or end the workflow.
-
-    Returns:
-        "fix" to retry, "end" to finish
-    """
-    status = state.get("status", "")
-
-    if status in ("success", "failed"):
-        return "end"
-
-    return "fix"
 
 
 # =============================================================================
@@ -734,16 +726,7 @@ def create_agent_graph() -> StateGraph:
         },
     )
     workflow.add_edge("execute", "evaluate")
-
-    # Add conditional edge for retry logic
-    workflow.add_conditional_edges(
-        "evaluate",
-        should_continue,
-        {
-            "fix": "fix",  # Retry: go back to fix
-            "end": END,  # Done: end workflow
-        },
-    )
+    workflow.add_edge("evaluate", END)
 
     return workflow.compile()
 
