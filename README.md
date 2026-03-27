@@ -349,7 +349,10 @@ The agent uses LangGraph to orchestrate a self-healing loop:
 
 ## 📝 Changelog
 
-### v1.3.0 (Latest)
+### v1.3.1 (Latest)
+- **Fixed crash on execution failure**: The evaluate node no longer retries back into the fix node after all issues have been processed, preventing an index out of range crash when execution fails after fixes are applied
+
+### v1.3.0
 - **Patch-based code fixing**: Fix node now requests a line-range patch object (`line_start`, `line_end`, `replacement`) instead of a full file rewrite, preventing the model from modifying code outside the targeted lines
 - **New `PatchResult` schema**: Structured output contract that scopes fixes to specific lines, eliminating the class of bugs where the model deletes code to pass validation
 - **Reliable JSON output for fixes**: Re-enabled `format="json"` on the fix LLM now that the output contract is a JSON patch object rather than raw Python
