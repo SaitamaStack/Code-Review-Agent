@@ -125,51 +125,40 @@ Respond with JSON only:
 - Modifying a dict/list passed as argument without .copy() is usually wrong"""
 
 
-FIX_SYSTEM_PROMPT = """You are an expert Python developer. Your task is to fix Python code based on provided feedback (code review or execution errors).
+FIX_SYSTEM_PROMPT = """You are a surgical Python code patch applier. You fix one specific issue at a time by returning a JSON patch object.
 
-## Your Fixes Should:
+You MUST respond with ONLY a valid JSON object in this exact format:
+{"line_start": <int>, "line_end": <int>, "replacement": "<string>", "explanation": "<string>"}
 
-1. **Address All Issues**: Fix every problem mentioned in the feedback
-2. **Preserve Intent**: Keep the original code's purpose and logic intact
-3. **Maintain Style**: Match the original coding style where possible
-4. **Be Minimal**: Only change what's necessary to fix the issues
-5. **Be Complete**: Return fully functional, runnable code
-
-## Output Format:
-
-You MUST respond with a valid JSON object containing:
-- "code": The complete fixed Python code (not just the changed parts)
-- "explanation": A clear explanation of what was wrong and how you fixed it
-- "changes_made": A list of specific changes made (e.g., "Fixed off-by-one error in loop on line 5")
-
-## Guidelines:
-
-- Return COMPLETE code: The code should be copy-paste runnable
-- Don't add unnecessary features: Fix the issues, don't "improve" unrelated parts
-- Handle edge cases: If the error was caused by an edge case, handle it properly
-- Preserve functionality: The fixed code should do what the original intended
-
-If the code requires imports, include them at the top of the code section."""
+Rules:
+- line_start: the first line number to replace (1-indexed, inclusive)
+- line_end: the last line number to replace (1-indexed, inclusive)
+- replacement: the exact new content for those lines (use \\n to separate multiple lines in JSON)
+- explanation: one sentence describing what you fixed
+- Change ONLY the lines required to fix the stated issue
+- Preserve all surrounding code, indentation, functions, classes, and imports exactly
+- Do not add, remove, or rename anything outside the specific lines being fixed"""
 
 
 # =============================================================================
 # PROMPT TEMPLATES
 # =============================================================================
 
+
 def get_review_prompt(code: str) -> str:
     """
     Generate a prompt for reviewing code.
-    
+
     Args:
         code: Python source code to review
-        
+
     Returns:
         Formatted prompt string for the LLM
     """
     # Add line numbers to help the model reference specific lines
-    lines = code.split('\n')
-    numbered_code = '\n'.join(f"{i+1:3d}| {line}" for i, line in enumerate(lines))
-    
+    lines = code.split("\n")
+    numbered_code = "\n".join(f"{i+1:3d}| {line}" for i, line in enumerate(lines))
+
     return f"""EXHAUSTIVELY analyze this Python code. Find EVERY bug. You will be penalized for missing bugs.
 
 ```python
@@ -207,67 +196,41 @@ RULES:
 - CHECK EVERY LINE of the code"""
 
 
-def get_fix_prompt(
+def get_fix_patch_prompt(
     code: str,
-    review: dict | None = None,
-    error: str | None = None,
-    previous_attempts: list[str] | None = None,
+    issue: str,
+    rejected_patches: list[str] | None = None,
 ) -> str:
     """
-    Generate a prompt for fixing code.
-    
+    Generate a prompt asking the LLM to return a surgical line-range patch.
+
     Args:
-        code: Current Python source code
-        review: Code review results (if available)
-        error: Execution error message (if available)
-        previous_attempts: List of errors from previous fix attempts
-        
+        code: Current Python source code (shown with line numbers)
+        issue: The single issue to fix, as identified in the review
+        rejected_patches: Rejection messages from previous failed attempts
+
     Returns:
         Formatted prompt string for the LLM
     """
-    prompt_parts = [
-        "Please fix the following Python code based on the feedback provided.",
-        "",
-        "## Current Code:",
-        "```python",
-        code,
-        "```",
-        "",
-    ]
-    
-    if review:
-        prompt_parts.extend([
-            "## Code Review Feedback:",
-            f"- Issues: {review.get('issues', [])}",
-            f"- Suggestions: {review.get('suggestions', [])}",
-            f"- Severity: {review.get('severity', 'unknown')}",
-            "",
-        ])
-    
-    if error:
-        prompt_parts.extend([
-            "## Execution Error:",
-            f"```",
-            error,
-            "```",
-            "",
-        ])
-    
-    if previous_attempts:
-        prompt_parts.extend([
-            "## Previous Attempts (these fixes didn't work):",
-        ])
-        for i, prev_error in enumerate(previous_attempts, 1):
-            prompt_parts.append(f"{i}. {prev_error}")
-        prompt_parts.extend([
-            "",
-            "Please try a different approach to fix the issue.",
-            "",
-        ])
-    
-    prompt_parts.extend([
-        "Respond with a JSON object containing \"code\", \"explanation\", and \"changes_made\" fields.",
-        "The \"code\" field must contain the COMPLETE fixed Python code.",
-    ])
-    
-    return "\n".join(prompt_parts)
+    lines = code.split("\n")
+    numbered_code = "\n".join(f"{i + 1:3d}| {line}" for i, line in enumerate(lines))
+
+    prompt = (
+        f"Fix this specific issue in the Python code below.\n\n"
+        f"ISSUE: {issue}\n\n"
+        f"CODE ({len(lines)} lines):\n"
+        f"{numbered_code}\n\n"
+        f"Return ONLY a JSON patch object:\n"
+        f'{{"line_start": N, "line_end": M, "replacement": "new lines here", "explanation": "what you fixed"}}\n\n'
+        f"- line_start and line_end are 1-indexed line numbers from the code above\n"
+        f"- replacement is the complete new content for those lines\n"
+        f"- Only change the lines directly involved in fixing the issue"
+    )
+
+    if rejected_patches:
+        prompt += (
+            f"\n\nPREVIOUS ATTEMPT REJECTED:\n{rejected_patches[-1]}\n"
+            f"Try a different approach."
+        )
+
+    return prompt

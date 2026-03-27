@@ -20,11 +20,13 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
 from agents.prompts import (
+    FIX_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
+    get_fix_patch_prompt,
     get_review_prompt,
 )
 from config import get_config
-from models.schemas import AgentState, CodeReview, FixedCode
+from models.schemas import AgentState, CodeReview, FixedCode, PatchResult
 from tools.executor import execute_code_safely
 
 # Configure logging for debugging LLM responses
@@ -54,8 +56,8 @@ def create_fix_llm() -> ChatOllama:
     """
     Create and configure the Ollama LLM instance for surgical code fixing.
 
-    Does not set format="json" because the fix node expects raw Python output,
-    not a JSON-wrapped response.
+    Uses format="json" because the fix node now expects a JSON patch object
+    rather than raw Python output.
 
     Returns:
         ChatOllama: Configured LLM for surgical per-issue code patching
@@ -65,6 +67,7 @@ def create_fix_llm() -> ChatOllama:
         model=config.model_name,
         base_url=config.ollama_base_url,
         temperature=config.temperature,
+        format="json",
         timeout=180,
         num_ctx=6144,
     )
@@ -342,173 +345,158 @@ def review_node(state: AgentState) -> AgentState:
     }
 
 
+def apply_patch(code: str, patch: PatchResult) -> str:
+    """
+    Apply a line-range patch to code.
+
+    Replaces lines line_start through line_end (1-indexed, inclusive) with
+    the patch replacement string. Lines outside that range are untouched.
+    """
+    lines = code.split("\n")
+    replacement_lines = patch.replacement.split("\n")
+    new_lines = (
+        lines[: patch.line_start - 1] + replacement_lines + lines[patch.line_end :]
+    )
+    return "\n".join(new_lines)
+
+
 def fix_node(state: AgentState) -> AgentState:
     """
-    Apply one fix per invocation using surgical per-issue patching.
+    Apply one patch per invocation using surgical line-range replacement.
 
-    Processes state["current_issue_index"] from review.issues. After each
-    model response, AST validation confirms that no top-level definitions were
-    removed. Retries up to 3 times per issue before skipping to the next.
+    Asks the LLM for a JSON patch object specifying which lines to replace
+    and what to replace them with. The model never sees or returns code
+    outside the targeted range, so it physically cannot corrupt unrelated code.
+    Retries up to 3 times per issue before skipping to the next.
     """
     config = get_config()
     llm = create_fix_llm()
 
     issues = state["review"].issues
     current_issue_index = state.get("current_issue_index", 0)
-    ast_retry_count = state.get("ast_retry_count", 0)
-    rejected_fixes = state.get("rejected_fixes", [])
+    patch_retry_count = state.get("patch_retry_count", 0)
+    rejected_patches = state.get("rejected_patches", [])
     fix_results = state.get("fix_results", [])
 
     issue = issues[current_issue_index]
+    current_code = state["current_code"]
 
     logger.info(
         f"=== FIX NODE ({config.model_name}): "
         f"Issue {current_issue_index + 1}/{len(issues)}, "
-        f"AST attempt {ast_retry_count + 1} ==="
+        f"attempt {patch_retry_count + 1} ==="
     )
     logger.info(f"Issue: {issue}")
 
-    user_message = (
-        "You are a surgical code patch applier. Your only job is to apply one specific fix to the code below.\n\n"
-        "RULES:\n"
-        "- Modify ONLY the code directly involved in the issue described below.\n"
-        "- You MUST preserve every function, class, method, and import that exists in the original code.\n"
-        "- Do NOT remove, rename, restructure, or rewrite anything that is not directly part of the fix.\n"
-        "- Do NOT add explanatory comments, docstrings, or inline notes.\n"
-        "- Do NOT include any explanation, summary, or description in your response.\n"
-        "- Return ONLY the complete fixed Python file. Nothing before it, nothing after it.\n\n"
-        f"ISSUE TO FIX:\n{issue}\n\n"
-        "ORIGINAL CODE (source of truth — your output must contain everything in here, "
-        f"minus only what the fix requires changing):\n{state['current_code']}"
-    )
-
-    if rejected_fixes:
-        user_message += f"\n\nPREVIOUS ATTEMPT REJECTED:\n{rejected_fixes[-1]}"
-
     messages = [
-        SystemMessage(
-            content=(
-                "You are a precise code patch applier. You output only valid Python code. "
-                "You never delete existing functionality. You never explain your changes."
-            )
+        SystemMessage(content=FIX_SYSTEM_PROMPT),
+        HumanMessage(
+            content=get_fix_patch_prompt(current_code, issue, rejected_patches or None)
         ),
-        HumanMessage(content=user_message),
     ]
 
     response = llm.invoke(messages)
     output = response.content.strip()
 
     logger.info(
-        f"=== FIX NODE: Got response ({len(output)} chars), running AST validation... ==="
+        f"=== FIX NODE: Got response ({len(output)} chars), parsing patch... ==="
     )
 
-    # Extract top-level definition names from original_code as the reference set.
-    try:
-        original_tree = ast.parse(state["original_code"])
-        original_definitions = {
-            node.name
-            for node in original_tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
-    except SyntaxError:
-        original_definitions = set()
-
-    # Validate the model's output.
-    missing: set[str] = set()
-    syntax_error = False
-    try:
-        output_tree = ast.parse(output)
-        output_definitions = {
-            node.name
-            for node in output_tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
-        missing = original_definitions - output_definitions
-    except SyntaxError:
-        syntax_error = True
-
-    if not syntax_error and not missing:
-        # Validation passed — accept the fix and advance to the next issue.
-        logger.info(f"✓ AST validation passed for issue {current_issue_index + 1}")
-        new_fix_results = fix_results + [{"issue": issue, "status": "success"}]
-        successful_issues = [
-            r["issue"] for r in new_fix_results if r["status"] == "success"
-        ]
-        new_fixed_code = FixedCode(
-            code=output,
-            explanation=f"Applied {len(successful_issues)} fix(es) out of {len(issues)} issues",
-            changes_made=successful_issues,
+    def _reject(reason: str) -> AgentState:
+        new_retry_count = patch_retry_count + 1
+        logger.warning(
+            f"✗ Patch rejected for issue {current_issue_index + 1} "
+            f"(attempt {new_retry_count}): {reason}"
         )
-        return {
-            **state,
-            "current_code": output,
-            "fixed_code": new_fixed_code,
-            "current_issue_index": current_issue_index + 1,
-            "ast_retry_count": 0,
-            "rejected_fixes": [],
-            "fix_results": new_fix_results,
-            "status": "fixing",
-            "messages": state.get("messages", [])
-            + [
-                {
-                    "role": "assistant",
-                    "content": f"Fixed issue {current_issue_index + 1}/{len(issues)}: {issue}",
-                }
-            ],
-        }
-
-    # Validation failed.
-    new_ast_retry_count = ast_retry_count + 1
-    logger.warning(
-        f"✗ AST validation failed for issue {current_issue_index + 1} "
-        f"(attempt {new_ast_retry_count})"
-    )
-
-    if new_ast_retry_count < 3:
-        if syntax_error:
-            rejection = (
-                f"Attempt {new_ast_retry_count} for issue '{issue}' was rejected because "
-                f"the output contained a syntax error. Return only valid Python."
+        if new_retry_count >= 3:
+            logger.error(
+                f"✗ Skipping issue {current_issue_index + 1} after 3 failed patch attempts"
             )
-        else:
-            rejection = (
-                f"Attempt {new_ast_retry_count} for issue '{issue}' was rejected because "
-                f"the following definitions were removed from the output: {missing}. "
-                f"You must not remove these."
-            )
+            return {
+                **state,
+                "current_issue_index": current_issue_index + 1,
+                "patch_retry_count": 0,
+                "rejected_patches": [],
+                "fix_results": fix_results
+                + [{"issue": issue, "status": "failed", "reason": reason}],
+                "status": "fixing",
+                "messages": state.get("messages", [])
+                + [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"Skipped issue {current_issue_index + 1}/{len(issues)} "
+                            f"after 3 failed attempts: {issue}"
+                        ),
+                    }
+                ],
+            }
         logger.info(
-            f"→ Retrying issue {current_issue_index + 1} (attempt {new_ast_retry_count + 1})"
+            f"→ Retrying issue {current_issue_index + 1} (attempt {new_retry_count + 1})"
         )
         return {
             **state,
-            "ast_retry_count": new_ast_retry_count,
-            "rejected_fixes": rejected_fixes + [rejection],
+            "patch_retry_count": new_retry_count,
+            "rejected_patches": rejected_patches
+            + [f"Attempt {new_retry_count}: {reason}"],
             "status": "fixing",
         }
 
-    # All 3 attempts exhausted — skip this issue and move on.
-    logger.error(
-        f"✗ Skipping issue {current_issue_index + 1} after 3 failed AST validation attempts"
+    patch_data = parse_json_response(output, PatchResult)
+    if not patch_data:
+        return _reject("Could not parse a JSON patch object from the response.")
+
+    patch = PatchResult(**patch_data)
+    lines = current_code.split("\n")
+
+    if (
+        patch.line_start < 1
+        or patch.line_end > len(lines)
+        or patch.line_start > patch.line_end
+    ):
+        return _reject(
+            f"Invalid line range: line_start={patch.line_start}, line_end={patch.line_end} "
+            f"(code has {len(lines)} lines). Provide valid 1-indexed line numbers."
+        )
+
+    patched_code = apply_patch(current_code, patch)
+
+    try:
+        ast.parse(patched_code)
+    except SyntaxError as e:
+        return _reject(
+            f"Patched code has a syntax error: {e}. "
+            f"Ensure the replacement is valid Python with correct indentation."
+        )
+
+    logger.info(
+        f"✓ Patch accepted for issue {current_issue_index + 1}: {patch.explanation}"
     )
-    new_fix_results = fix_results + [
-        {
-            "issue": issue,
-            "status": "failed",
-            "reason": "AST validation failed after 3 attempts",
-        }
+    new_fix_results = fix_results + [{"issue": issue, "status": "success"}]
+    successful_issues = [
+        r["issue"] for r in new_fix_results if r["status"] == "success"
     ]
+
     return {
         **state,
+        "current_code": patched_code,
+        "fixed_code": FixedCode(
+            code=patched_code,
+            explanation=f"Applied {len(successful_issues)} fix(es) out of {len(issues)} issues",
+            changes_made=successful_issues,
+        ),
         "current_issue_index": current_issue_index + 1,
-        "ast_retry_count": 0,
-        "rejected_fixes": [],
+        "patch_retry_count": 0,
+        "rejected_patches": [],
         "fix_results": new_fix_results,
         "status": "fixing",
         "messages": state.get("messages", [])
         + [
             {
                 "role": "assistant",
-                "content": f"Skipped issue {current_issue_index + 1}/{len(issues)} after 3 failed attempts: {issue}",
+                "content": (
+                    f"Fixed issue {current_issue_index + 1}/{len(issues)}: {patch.explanation}"
+                ),
             }
         ],
     }
@@ -802,8 +790,8 @@ def run_agent(code: str) -> AgentState:
         "status": "reviewing",
         "parse_failures": 0,
         "current_issue_index": 0,
-        "ast_retry_count": 0,
-        "rejected_fixes": [],
+        "patch_retry_count": 0,
+        "rejected_patches": [],
         "fix_results": [],
     }
 

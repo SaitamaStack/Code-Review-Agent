@@ -53,6 +53,25 @@ class FixedCode(BaseModel):
     )
 
 
+class PatchResult(BaseModel):
+    """
+    A surgical line-range patch returned by the fix LLM.
+
+    Instead of rewriting the entire file, the model specifies only which
+    lines to replace and what to replace them with, limiting the blast
+    radius of any single fix to the lines actually involved.
+    """
+
+    line_start: int = Field(description="1-indexed first line to replace (inclusive)")
+    line_end: int = Field(description="1-indexed last line to replace (inclusive)")
+    replacement: str = Field(
+        description="New code to insert in place of line_start through line_end"
+    )
+    explanation: str = Field(
+        default="", description="Brief description of the fix applied"
+    )
+
+
 class ExecutionResult(BaseModel):
     """
     Result of executing Python code in the sandbox.
@@ -96,8 +115,8 @@ class AgentState(TypedDict, total=False):
         status: Current status of the agent workflow
         parse_failures: Count of consecutive LLM response parse failures
         current_issue_index: Which issue in review.issues is currently being fixed
-        ast_retry_count: Retry counter for AST validation failures (separate from attempt)
-        rejected_fixes: Rejection messages from failed AST validation attempts
+        patch_retry_count: Retry counter for patch failures per issue
+        rejected_patches: Rejection messages from failed patch attempts
         fix_results: Success or failure record accumulated for each processed issue
     """
 
@@ -112,6 +131,6 @@ class AgentState(TypedDict, total=False):
     status: Literal["reviewing", "fixing", "executing", "success", "failed"]
     parse_failures: int
     current_issue_index: int
-    ast_retry_count: int
-    rejected_fixes: list[str]
+    patch_retry_count: int
+    rejected_patches: list[str]
     fix_results: list[dict]
