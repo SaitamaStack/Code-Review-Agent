@@ -16,6 +16,7 @@ class CodeReview(BaseModel):
 
     The LLM analyzes submitted code and returns this structured review
     containing identified issues, improvement suggestions, and severity.
+    Used by both the broad review pass and the verification pass.
     """
 
     issues: list[str] = Field(
@@ -35,49 +36,12 @@ class CodeReview(BaseModel):
     )
 
 
-class FixedCode(BaseModel):
-    """
-    Structured output from the code fixing step.
-
-    Contains the corrected code along with explanations of what
-    was changed and why, enabling transparency in the fix process.
-    """
-
-    code: str = Field(description="The corrected Python code")
-    explanation: str = Field(
-        default="", description="Human-readable explanation of the fixes applied"
-    )
-    changes_made: list[str] = Field(
-        default_factory=list,
-        description="List of specific changes made to the original code",
-    )
-
-
-class PatchResult(BaseModel):
-    """
-    A surgical line-range patch returned by the fix LLM.
-
-    Instead of rewriting the entire file, the model specifies only which
-    lines to replace and what to replace them with, limiting the blast
-    radius of any single fix to the lines actually involved.
-    """
-
-    line_start: int = Field(description="1-indexed first line to replace (inclusive)")
-    line_end: int = Field(description="1-indexed last line to replace (inclusive)")
-    replacement: str = Field(
-        description="New code to insert in place of line_start through line_end"
-    )
-    explanation: str = Field(
-        default="", description="Brief description of the fix applied"
-    )
-
-
 class ExecutionResult(BaseModel):
     """
     Result of executing Python code in the sandbox.
 
     Captures success/failure status along with stdout/stderr
-    for display and error analysis.
+    for display and error analysis. Used by the Execute Only path.
     """
 
     success: bool = Field(description="Whether the code executed without errors")
@@ -102,35 +66,20 @@ class AgentState(TypedDict, total=False):
     State schema for the LangGraph agent state machine.
 
     This TypedDict defines all state variables passed between
-    nodes in the agent graph during the review-fix-execute cycle.
+    nodes in the two-pass review graph.
 
     Attributes:
         original_code: The user's original submitted code (immutable)
-        current_code: The current version of code (updated after fixes)
-        review: Latest code review results
-        execution_result: Result from most recent execution attempt
-        attempt: Current retry attempt number (starts at 0)
-        messages: Chat history for multi-turn conversations
-        error_history: List of errors from previous attempts (for context)
+        current_code: The current version of code being reviewed
+        review: Accumulated review results (merged after both passes)
+        messages: Chat history for the agent run
         status: Current status of the agent workflow
-        parse_failures: Count of consecutive LLM response parse failures
-        current_issue_index: Which issue in review.issues is currently being fixed
-        patch_retry_count: Retry counter for patch failures per issue
-        rejected_patches: Rejection messages from failed patch attempts
-        fix_results: Success or failure record accumulated for each processed issue
+        parse_failures: Count of LLM response parse failures across both passes
     """
 
     original_code: str
     current_code: str
     review: CodeReview | None
-    fixed_code: FixedCode | None
-    execution_result: ExecutionResult | None
-    attempt: int
     messages: list[dict]
-    error_history: list[str]
-    status: Literal["reviewing", "fixing", "executing", "success", "failed"]
+    status: Literal["reviewing", "verifying", "success", "failed"]
     parse_failures: int
-    current_issue_index: int
-    patch_retry_count: int
-    rejected_patches: list[str]
-    fix_results: list[dict]

@@ -2,21 +2,18 @@
 Models package containing Pydantic schemas for structured LLM outputs.
 
 This package provides type-safe data structures for:
-- Code review results
-- Fixed code with explanations
-- Execution results
+- Code review results (broad pass and verification pass)
+- Execution results (used by the sandboxed executor)
 """
 
 from models.schemas import (
     AgentState,
     CodeReview,
     ExecutionResult,
-    FixedCode,
 )
 
 __all__ = [
     "CodeReview",
-    "FixedCode", 
     "ExecutionResult",
     "AgentState",
 ]

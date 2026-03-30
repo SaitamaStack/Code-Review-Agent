@@ -1,33 +1,34 @@
 """
-LangGraph state machine for the code review and fix agent.
+LangGraph state machine for the two-pass code review agent.
 
 Implements the following workflow:
-    START → review → fix → execute → evaluate
-                              ↑          ↓
-                              └── retry ←┘ (if error & attempts < max)
-                                         ↓
-                                       END (success or max retries)
+    START → broad_review → verification → END
+
+broad_review: exhaustive general-purpose Python code audit
+verification: targeted second pass for categories LLMs commonly miss
+              (hardcoded credentials, bare except, O(n²) patterns,
+               weak password hashing, timing attacks)
+
+The verification node merges its findings into the broad review's output,
+so the final state.review contains the combined results of both passes.
 """
 
-import ast
 import json
 import logging
 import re
-from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
 from agents.prompts import (
-    FIX_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
-    get_fix_patch_prompt,
+    VERIFICATION_SYSTEM_PROMPT,
     get_review_prompt,
+    get_verification_prompt,
 )
 from config import get_config
-from models.schemas import AgentState, CodeReview, FixedCode, PatchResult
-from tools.executor import execute_code_safely
+from models.schemas import AgentState, CodeReview
 
 # Configure logging for debugging LLM responses
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +40,7 @@ def create_llm() -> ChatOllama:
     Create and configure the Ollama LLM instance.
 
     Returns:
-        ChatOllama: Configured LLM for code review/fix tasks
+        ChatOllama: Configured LLM for code review tasks
     """
     config = get_config()
     return ChatOllama(
@@ -49,27 +50,6 @@ def create_llm() -> ChatOllama:
         format="json",  # Request JSON output
         timeout=180,  # 3 minute timeout for thorough analysis
         num_ctx=6144,  # 6K context window - optimal balance for code analysis
-    )
-
-
-def create_fix_llm() -> ChatOllama:
-    """
-    Create and configure the Ollama LLM instance for surgical code fixing.
-
-    Uses format="json" because the fix node now expects a JSON patch object
-    rather than raw Python output.
-
-    Returns:
-        ChatOllama: Configured LLM for surgical per-issue code patching
-    """
-    config = get_config()
-    return ChatOllama(
-        model=config.model_name,
-        base_url=config.ollama_base_url,
-        temperature=config.temperature,
-        format="json",
-        timeout=180,
-        num_ctx=6144,
     )
 
 
@@ -140,8 +120,6 @@ def _adapt_response_to_schema(data: dict, model_class: type) -> dict:
     Handles cases where the model returns a different structure than expected,
     like objects instead of strings for list fields.
     """
-    from models.schemas import CodeReview, FixedCode
-
     if model_class == CodeReview:
         # Normalize issues and suggestions to string lists
         if "issues" in data and isinstance(data["issues"], list):
@@ -160,15 +138,6 @@ def _adapt_response_to_schema(data: dict, model_class: type) -> dict:
         # Ensure summary is a string
         if "summary" in data and not isinstance(data["summary"], str):
             data["summary"] = str(data["summary"])
-
-    elif model_class == FixedCode:
-        # Normalize changes_made to string list
-        if "changes_made" in data and isinstance(data["changes_made"], list):
-            data["changes_made"] = _normalize_to_string_list(data["changes_made"])
-
-        # Ensure code is a string
-        if "code" in data and not isinstance(data["code"], str):
-            data["code"] = str(data["code"])
 
     return data
 
@@ -288,19 +257,18 @@ def parse_json_response(response: str, model_class: type) -> dict | None:
 # =============================================================================
 
 
-def review_node(state: AgentState) -> AgentState:
+def broad_review_node(state: AgentState) -> AgentState:
     """
-    Review the submitted code and identify issues.
+    First pass: exhaustive general-purpose code review.
 
-    This node:
-    1. Sends code to LLM for review
-    2. Parses structured CodeReview response
-    3. Updates state with review results
+    Sends the code to the LLM with a broad audit prompt covering all standard
+    bug categories. Sets the baseline review that the verification node will
+    then supplement with targeted checks.
     """
     config = get_config()
     llm = create_llm()
 
-    logger.info(f"=== REVIEW NODE: Calling LLM ({config.model_name}) ===")
+    logger.info(f"=== BROAD REVIEW NODE: Calling LLM ({config.model_name}) ===")
 
     messages = [
         SystemMessage(content=REVIEW_SYSTEM_PROMPT),
@@ -309,30 +277,28 @@ def review_node(state: AgentState) -> AgentState:
 
     response = llm.invoke(messages)
 
-    logger.info(f"=== REVIEW NODE: Got response, parsing... ===")
+    logger.info("=== BROAD REVIEW NODE: Got response, parsing... ===")
 
-    # Parse the response into CodeReview
     review_data = parse_json_response(response.content, CodeReview)
 
-    # Track parse failures in state for detecting stuck loops
     parse_failures = state.get("parse_failures", 0)
 
     if review_data:
         review = CodeReview(**review_data)
         logger.info(
-            f"✓ Review parsed successfully: {review.summary[:100] if review.summary else 'no summary'}"
+            f"✓ Broad review parsed: {len(review.issues)} issue(s) — "
+            f"{review.summary[:80] if review.summary else 'no summary'}"
         )
     else:
-        # Fallback if parsing fails
         parse_failures += 1
-        logger.warning(f"✗ Review parsing failed (failure #{parse_failures})")
+        logger.warning(f"✗ Broad review parsing failed (failure #{parse_failures})")
         review = CodeReview(
             issues=["Could not parse LLM response - check logs for raw output"],
             suggestions=[
                 "The model may not be producing valid JSON. Try a different model."
             ],
             severity="medium",
-            summary=f"Review parsing failed (attempt #{parse_failures})",
+            summary=f"Broad review parsing failed (attempt #{parse_failures})",
         )
 
     return {
@@ -341,345 +307,129 @@ def review_node(state: AgentState) -> AgentState:
         "status": "reviewing",
         "parse_failures": parse_failures,
         "messages": state.get("messages", [])
-        + [{"role": "assistant", "content": f"Review: {review.summary}"}],
+        + [{"role": "assistant", "content": f"Broad review: {review.summary}"}],
     }
 
 
-def apply_patch(code: str, patch: PatchResult) -> str:
+def verification_node(state: AgentState) -> AgentState:
     """
-    Apply a line-range patch to code.
+    Second pass: targeted hunt for issues LLMs most commonly miss.
 
-    Replaces lines line_start through line_end (1-indexed, inclusive) with
-    the patch replacement string. Lines outside that range are untouched.
-    """
-    lines = code.split("\n")
-    replacement_lines = patch.replacement.split("\n")
-    new_lines = (
-        lines[: patch.line_start - 1] + replacement_lines + lines[patch.line_end :]
-    )
-    return "\n".join(new_lines)
+    Receives the broad review's findings and checks specifically for:
+    - Hardcoded credentials
+    - Bare except clauses
+    - O(n²) string concatenation patterns
+    - Wrong password hashing algorithms (MD5/SHA1/SHA256)
+    - Timing attacks via non-constant-time comparisons
 
-
-def fix_node(state: AgentState) -> AgentState:
-    """
-    Apply one patch per invocation using surgical line-range replacement.
-
-    Asks the LLM for a JSON patch object specifying which lines to replace
-    and what to replace them with. The model never sees or returns code
-    outside the targeted range, so it physically cannot corrupt unrelated code.
-    Retries up to 3 times per issue before skipping to the next.
+    Merges any new findings into the existing review so state.review
+    reflects the complete picture from both passes.
     """
     config = get_config()
-    llm = create_fix_llm()
+    llm = create_llm()
 
-    issues = state["review"].issues
-    current_issue_index = state.get("current_issue_index", 0)
-    patch_retry_count = state.get("patch_retry_count", 0)
-    rejected_patches = state.get("rejected_patches", [])
-    fix_results = state.get("fix_results", [])
-
-    issue = issues[current_issue_index]
-    current_code = state["current_code"]
+    prior_review = state["review"]
 
     logger.info(
-        f"=== FIX NODE ({config.model_name}): "
-        f"Issue {current_issue_index + 1}/{len(issues)}, "
-        f"attempt {patch_retry_count + 1} ==="
+        f"=== VERIFICATION NODE: Calling LLM ({config.model_name}) — "
+        f"prior review has {len(prior_review.issues)} issue(s) ==="
     )
-    logger.info(f"Issue: {issue}")
 
     messages = [
-        SystemMessage(content=FIX_SYSTEM_PROMPT),
+        SystemMessage(content=VERIFICATION_SYSTEM_PROMPT),
         HumanMessage(
-            content=get_fix_patch_prompt(current_code, issue, rejected_patches or None)
+            content=get_verification_prompt(state["current_code"], prior_review)
         ),
     ]
 
     response = llm.invoke(messages)
-    output = response.content.strip()
 
-    logger.info(
-        f"=== FIX NODE: Got response ({len(output)} chars), parsing patch... ==="
-    )
+    logger.info("=== VERIFICATION NODE: Got response, parsing... ===")
 
-    def _reject(reason: str) -> AgentState:
-        new_retry_count = patch_retry_count + 1
+    verification_data = parse_json_response(response.content, CodeReview)
+    parse_failures = state.get("parse_failures", 0)
+
+    if not verification_data:
+        parse_failures += 1
         logger.warning(
-            f"✗ Patch rejected for issue {current_issue_index + 1} "
-            f"(attempt {new_retry_count}): {reason}"
-        )
-        if new_retry_count >= 3:
-            logger.error(
-                f"✗ Skipping issue {current_issue_index + 1} after 3 failed patch attempts"
-            )
-            return {
-                **state,
-                "current_issue_index": current_issue_index + 1,
-                "patch_retry_count": 0,
-                "rejected_patches": [],
-                "fix_results": fix_results
-                + [{"issue": issue, "status": "failed", "reason": reason}],
-                "status": "fixing",
-                "messages": state.get("messages", [])
-                + [
-                    {
-                        "role": "assistant",
-                        "content": (
-                            f"Skipped issue {current_issue_index + 1}/{len(issues)} "
-                            f"after 3 failed attempts: {issue}"
-                        ),
-                    }
-                ],
-            }
-        logger.info(
-            f"→ Retrying issue {current_issue_index + 1} (attempt {new_retry_count + 1})"
+            f"✗ Verification parsing failed (failure #{parse_failures}). "
+            f"Using broad review only."
         )
         return {
             **state,
-            "patch_retry_count": new_retry_count,
-            "rejected_patches": rejected_patches
-            + [f"Attempt {new_retry_count}: {reason}"],
-            "status": "fixing",
+            "status": "success",
+            "parse_failures": parse_failures,
+            "messages": state.get("messages", [])
+            + [
+                {
+                    "role": "assistant",
+                    "content": "Verification pass: could not parse response, using broad review only.",
+                }
+            ],
         }
 
-    patch_data = parse_json_response(output, PatchResult)
-    if not patch_data:
-        return _reject("Could not parse a JSON patch object from the response.")
+    verification = CodeReview(**verification_data)
+    logger.info(
+        f"✓ Verification parsed: {len(verification.issues)} additional issue(s) found"
+    )
 
-    patch = PatchResult(**patch_data)
-    lines = current_code.split("\n")
+    # Merge verification findings into the prior review.
+    # Dedup by checking if the new issue text is a substring of any existing issue
+    # (catches rephrased duplicates as well as exact matches).
+    existing_lower = "\n".join(prior_review.issues).lower()
+    new_issues = [
+        issue for issue in verification.issues if issue.lower() not in existing_lower
+    ]
+    new_suggestions = [
+        s for s in verification.suggestions if s not in prior_review.suggestions
+    ]
 
-    if (
-        patch.line_start < 1
-        or patch.line_end > len(lines)
-        or patch.line_start > patch.line_end
-    ):
-        return _reject(
-            f"Invalid line range: line_start={patch.line_start}, line_end={patch.line_end} "
-            f"(code has {len(lines)} lines). Provide valid 1-indexed line numbers."
-        )
+    merged_issues = prior_review.issues + new_issues
+    merged_suggestions = prior_review.suggestions + new_suggestions
 
-    patched_code = apply_patch(current_code, patch)
+    # Take the higher of the two severity ratings
+    severity_rank = {"low": 0, "medium": 1, "high": 2}
+    merged_severity = max(
+        prior_review.severity,
+        verification.severity,
+        key=lambda s: severity_rank.get(s, 0),
+    )
 
-    try:
-        ast.parse(patched_code)
-    except SyntaxError as e:
-        return _reject(
-            f"Patched code has a syntax error: {e}. "
-            f"Ensure the replacement is valid Python with correct indentation."
-        )
+    new_count = len(new_issues)
+    verification_note = (
+        f" Verification pass added {new_count} additional issue(s)."
+        if new_count > 0
+        else " Verification pass confirmed no additional issues."
+    )
+
+    merged_review = CodeReview(
+        issues=merged_issues,
+        suggestions=merged_suggestions,
+        severity=merged_severity,
+        summary=prior_review.summary + verification_note,
+    )
 
     logger.info(
-        f"✓ Patch accepted for issue {current_issue_index + 1}: {patch.explanation}"
+        f"✓ Merged review: {len(merged_issues)} total issue(s) "
+        f"({new_count} new from verification)"
     )
-    new_fix_results = fix_results + [{"issue": issue, "status": "success"}]
-    successful_issues = [
-        r["issue"] for r in new_fix_results if r["status"] == "success"
-    ]
 
     return {
         **state,
-        "current_code": patched_code,
-        "fixed_code": FixedCode(
-            code=patched_code,
-            explanation=f"Applied {len(successful_issues)} fix(es) out of {len(issues)} issues",
-            changes_made=successful_issues,
-        ),
-        "current_issue_index": current_issue_index + 1,
-        "patch_retry_count": 0,
-        "rejected_patches": [],
-        "fix_results": new_fix_results,
-        "status": "fixing",
+        "review": merged_review,
+        "status": "success",
+        "parse_failures": parse_failures,
         "messages": state.get("messages", [])
         + [
             {
                 "role": "assistant",
                 "content": (
-                    f"Fixed issue {current_issue_index + 1}/{len(issues)}: {patch.explanation}"
+                    f"Verification: {new_count} additional issue(s) found. "
+                    f"Total: {len(merged_issues)} issue(s)."
                 ),
             }
         ],
     }
-
-
-def _extract_code_from_response(response: str) -> str | None:
-    """
-    Try to extract Python code from a response even if JSON parsing failed.
-
-    This handles cases where the model outputs code in markdown blocks
-    but doesn't follow the expected JSON structure.
-    """
-    # Try to find Python code blocks
-    patterns = [
-        r"```python\s*([\s\S]*?)```",
-        r"```py\s*([\s\S]*?)```",
-        r"```\s*([\s\S]*?)```",
-    ]
-
-    for pattern in patterns:
-        matches = re.findall(pattern, response, re.IGNORECASE)
-        for match in matches:
-            code = match.strip()
-            # Basic validation - should look like Python code
-            if code and (
-                "def " in code
-                or "class " in code
-                or "import " in code
-                or "print(" in code
-                or "=" in code
-            ):
-                logger.info(f"Extracted code block ({len(code)} chars)")
-                return code
-
-    # Try to find code in a "code" field even if overall JSON is malformed
-    code_field_match = re.search(
-        r'"code"\s*:\s*"((?:[^"\\]|\\.)*)"|\'code\'\s*:\s*\'((?:[^\'\\]|\\.)*)\'',
-        response,
-    )
-    if code_field_match:
-        code = code_field_match.group(1) or code_field_match.group(2)
-        if code:
-            # Unescape the string
-            try:
-                code = code.encode().decode("unicode_escape")
-                logger.info(f"Extracted code from 'code' field ({len(code)} chars)")
-                return code
-            except Exception:
-                pass
-
-    return None
-
-
-def execute_node(state: AgentState) -> AgentState:
-    """
-    Execute the current code in a sandboxed environment.
-
-    This node:
-    1. Runs code through the safe executor
-    2. Captures execution results
-    3. Updates state with results
-    """
-    result = execute_code_safely(state["current_code"])
-
-    # Track error history for context in retries
-    error_history = state.get("error_history", [])
-    if not result.success and result.error:
-        error_history = error_history + [result.error]
-
-    return {
-        **state,
-        "execution_result": result,
-        "error_history": error_history,
-        "status": "executing",
-    }
-
-
-def evaluate_node(state: AgentState) -> AgentState:
-    """
-    Evaluate execution results and determine next action.
-
-    This node:
-    1. Checks if execution was successful
-    2. Updates attempt counter
-    3. Sets final status
-    """
-    config = get_config()
-    result = state.get("execution_result")
-    attempt = state.get("attempt", 0)
-    parse_failures = state.get("parse_failures", 0)
-
-    logger.info(f"=== EVALUATE NODE ===")
-    logger.info(f"Attempt: {attempt + 1}/{config.max_retries}")
-    logger.info(f"Parse failures so far: {parse_failures}")
-    logger.info(f"Execution success: {result.success if result else 'N/A'}")
-
-    if result and result.success:
-        logger.info(f"✓ Execution successful, ending workflow")
-        return {
-            **state,
-            "status": "success",
-            "messages": state.get("messages", [])
-            + [
-                {
-                    "role": "assistant",
-                    "content": f"✅ Code executed successfully! Output: {result.output}",
-                }
-            ],
-        }
-
-    # Execution failed
-    new_attempt = attempt + 1
-
-    # Check if we're in a stuck loop (parse failures but no progress)
-    if parse_failures > 0 and new_attempt > 1:
-        # Check if code hasn't changed - indicates we're stuck
-        if state.get("current_code") == state.get("original_code"):
-            logger.warning(
-                f"✗ Detected stuck loop: code unchanged after {new_attempt} attempts with {parse_failures} parse failures"
-            )
-            return {
-                **state,
-                "attempt": new_attempt,
-                "status": "failed",
-                "messages": state.get("messages", [])
-                + [
-                    {
-                        "role": "assistant",
-                        "content": f"❌ Stuck loop detected: LLM responses could not be parsed. Try a different model or check the logs.",
-                    }
-                ],
-            }
-
-    if new_attempt >= config.max_retries:
-        logger.info(f"✗ Max retries reached ({config.max_retries}), marking as failed")
-        return {
-            **state,
-            "attempt": new_attempt,
-            "status": "failed",
-            "messages": state.get("messages", [])
-            + [
-                {
-                    "role": "assistant",
-                    "content": f"❌ Max retries ({config.max_retries}) reached. Last error: {result.error if result else 'Unknown'}",
-                }
-            ],
-        }
-
-    logger.info(f"✗ Execution failed after fixes, marking as failed")
-    return {
-        **state,
-        "attempt": new_attempt,
-        "status": "failed",
-        "messages": state.get("messages", [])
-        + [
-            {
-                "role": "assistant",
-                "content": f"❌ Execution failed after applying fixes. Last error: {result.error if result else 'Unknown'}",
-            }
-        ],
-    }
-
-
-# =============================================================================
-# GRAPH EDGES (Routing Logic)
-# =============================================================================
-
-
-def should_fix_continue(state: AgentState) -> Literal["fix", "execute"]:
-    """
-    Route after the fix node.
-
-    Returns "fix" while there are still issues remaining in review.issues,
-    or "execute" once all issues have been processed (or skipped).
-    """
-    review = state.get("review")
-    if review is None:
-        return "execute"
-
-    current_index = state.get("current_issue_index", 0)
-    if current_index < len(review.issues):
-        return "fix"
-    return "execute"
 
 
 # =============================================================================
@@ -689,104 +439,70 @@ def should_fix_continue(state: AgentState) -> Literal["fix", "execute"]:
 
 def create_agent_graph() -> StateGraph:
     """
-    Create the LangGraph state machine for code review and fix.
+    Create the LangGraph state machine for two-pass code review.
 
     Graph structure:
-        START → review → fix → execute → evaluate
-                                  ↑          ↓
-                                  └── retry ←┘
-                                             ↓
-                                            END
+        START → broad_review → verification → END
 
     Returns:
         Compiled StateGraph ready for execution
     """
-    # Initialize the graph with our state schema
     workflow = StateGraph(AgentState)
 
     # Add nodes
-    workflow.add_node("review", review_node)
-    workflow.add_node("fix", fix_node)
-    workflow.add_node("execute", execute_node)
-    workflow.add_node("evaluate", evaluate_node)
+    workflow.add_node("broad_review", broad_review_node)
+    workflow.add_node("verification", verification_node)
 
-    # Set entry point
-    workflow.set_entry_point("review")
-
-    # Add edges for the main flow
-    workflow.add_conditional_edges(
-        "review", should_fix_continue, {"fix": "fix", "execute": "execute"}
-    )
-    workflow.add_conditional_edges(
-        "fix",
-        should_fix_continue,
-        {
-            "fix": "fix",  # More issues remain — loop back
-            "execute": "execute",  # All issues processed — proceed
-        },
-    )
-    workflow.add_edge("execute", "evaluate")
-    workflow.add_edge("evaluate", END)
+    # Set entry point and edges
+    workflow.set_entry_point("broad_review")
+    workflow.add_edge("broad_review", "verification")
+    workflow.add_edge("verification", END)
 
     return workflow.compile()
 
 
 def run_agent(code: str) -> AgentState:
     """
-    Run the code review and fix agent on the given code.
+    Run the two-pass code review agent on the given code.
 
     This is the main entry point for using the agent.
 
     Args:
-        code: Python source code to review and fix
+        code: Python source code to review
 
     Returns:
-        Final AgentState with review, fixed code, and execution results
+        Final AgentState with the merged review from both passes
 
     Example:
-        result = run_agent("print('Hello World')")
+        result = run_agent("def foo(items=[]): pass")
         if result["status"] == "success":
-            print("Code works!")
-            print(result["execution_result"].output)
-        else:
-            print("Failed to fix code")
-            print(result["error_history"])
+            review = result["review"]
+            for issue in review.issues:
+                print(issue)
     """
-    # Create the graph
     graph = create_agent_graph()
 
-    # Initialize state
     initial_state: AgentState = {
         "original_code": code,
         "current_code": code,
         "review": None,
-        "fixed_code": None,
-        "execution_result": None,
-        "attempt": 0,
         "messages": [
             {
                 "role": "user",
-                "content": f"Please review and fix this code:\n```python\n{code}\n```",
+                "content": f"Please review this code:\n```python\n{code}\n```",
             }
         ],
-        "error_history": [],
         "status": "reviewing",
         "parse_failures": 0,
-        "current_issue_index": 0,
-        "patch_retry_count": 0,
-        "rejected_patches": [],
-        "fix_results": [],
     }
 
-    logger.info(f"=== STARTING AGENT RUN ===")
+    logger.info("=== STARTING AGENT RUN ===")
     logger.info(f"Code length: {len(code)} chars")
 
-    # Run the graph
     final_state = graph.invoke(initial_state)
 
-    logger.info(f"=== AGENT RUN COMPLETE ===")
+    logger.info("=== AGENT RUN COMPLETE ===")
     logger.info(f"Final status: {final_state.get('status')}")
     logger.info(f"Total parse failures: {final_state.get('parse_failures', 0)}")
-    logger.info(f"Total attempts: {final_state.get('attempt', 0)}")
 
     return final_state

@@ -1,12 +1,12 @@
-# 🔍 Local Code Review & Fix Agent
+# 🔍 Local Code Review Agent
 
-A privacy-first Python desktop application that reviews, explains, and iteratively fixes Python code using a self-healing agent loop. **Fully offline** — no cloud APIs required.
+A privacy-first Python desktop application that reviews Python code using a two-pass LLM agent — a broad exhaustive audit followed by a targeted verification pass for the categories models most commonly miss. **Fully offline** — no cloud APIs required.
 
 ## ✨ Features
 
 - **🔒 Privacy First**: All processing happens locally using Ollama. Your code never leaves your machine.
-- **🔄 Self-Healing Loop**: Automatically retries fixing code until it executes successfully.
-- **📋 Detailed Reviews**: Get comprehensive code reviews with issues, suggestions, and severity ratings.
+- **🔍 Two-Pass Review**: Broad pass audits all bug categories; verification pass targets hardcoded credentials, bare `except`, O(n²) patterns, weak password hashing, and timing attacks.
+- **📋 Detailed Reports**: Issues, suggestions, severity ratings, and a merged summary from both passes.
 - **🚀 Sandboxed Execution**: Safely execute code with timeout protection and blocked imports.
 - **🖥️ Modern Desktop UI**: Beautiful dark-themed CustomTkinter interface.
 
@@ -125,14 +125,14 @@ After benchmark analysis, **qwen3:14b** was selected as the minimum viable model
 
 1. **Launch the App**: Double-click the executable or run `python app.py`
 2. **Enter Code**: Paste Python code or click "📂 Upload File"
-3. **Review & Fix**: Click "🔍 Review & Fix" to start the agent
-4. **View Results**: Check the tabs for Review, Fixed Code, Execution, and Diff
+3. **Review Code**: Click "🔍 Review Code" to start the two-pass agent
+4. **View Results**: Check the Review tab for the merged findings from both passes
 
 ### Quick Actions
 
 | Button | Description |
 |--------|-------------|
-| **🔍 Review & Fix** | Full analysis: review → fix → execute → retry |
+| **🔍 Review Code** | Two-pass analysis: broad review → verification |
 | **🚀 Execute Only** | Run code without LLM review |
 | **📂 Upload File** | Load a `.py` file from disk |
 
@@ -144,10 +144,9 @@ Adjust settings in the sidebar:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Ollama Model** | `qwen3:14b` | LLM model to use |
+| **Ollama Model** | `qwen3:14b` | LLM model to use for both review passes |
 | **Ollama Base URL** | `http://localhost:11434` | Ollama server address |
-| **Max Retries** | `3` | Max attempts to fix code |
-| **Timeout** | `10s` | Execution timeout per attempt |
+| **Timeout** | `10s` | Execution timeout (Execute Only mode) |
 | **Temperature** | `0.1` | LLM creativity (lower = deterministic) |
 
 ---
@@ -281,7 +280,7 @@ ollama list
 ## 🛠️ Tech Stack
 
 - **[CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)** - Modern desktop UI framework
-- **[LangGraph](https://langchain-ai.github.io/langgraph/)** - Agent state machine for review-fix-execute workflow
+- **[LangGraph](https://langchain-ai.github.io/langgraph/)** - Agent state machine for the two-pass review pipeline
 - **[Ollama](https://ollama.ai/)** - Local LLM inference
 - **[Pydantic](https://docs.pydantic.dev/)** - Structured LLM output validation
 - **[PyInstaller](https://pyinstaller.org/)** - Executable packaging
@@ -301,7 +300,7 @@ code-review-agent/
 ├── agents/
 │   ├── __init__.py           # Package exports
 │   ├── graph.py              # LangGraph state machine
-│   └── prompts.py            # System prompts for review/fix
+│   └── prompts.py            # System prompts for broad review and verification passes
 ├── tools/
 │   ├── __init__.py           # Package exports
 │   ├── executor.py           # Safe code execution
@@ -332,24 +331,34 @@ Code is executed in an isolated subprocess with strict timeout enforcement.
 ## 🔄 Agent Workflow
 
 ```
-START → review → fix → execute → evaluate
-                          ↑          ↓
-                          └── retry ←┘ (if error & attempts < max)
-                                     ↓
-                                   END (success or max retries)
+START → broad_review → verification → END
 ```
 
-The agent uses LangGraph to orchestrate a self-healing loop:
-1. **Review**: LLM analyzes code for bugs and security issues
-2. **Fix**: LLM generates corrected code based on review
-3. **Execute**: Code runs in sandboxed subprocess
-4. **Evaluate**: Check results, retry if needed
+The agent uses LangGraph to orchestrate a two-pass review:
+
+1. **Broad Review**: LLM performs an exhaustive audit across 15 bug categories — syntax, type errors, logic bugs, security, mutable defaults, threading issues, mutation bugs, exception handling, performance, and more.
+2. **Verification**: A second targeted LLM pass hunts specifically for the 5 categories models most commonly miss:
+   - Hardcoded credentials (passwords, API keys, tokens in string literals)
+   - Bare `except:` or `except Exception: pass` silently swallowing errors
+   - O(n²) string concatenation inside loops (`result += "..."`)
+   - Wrong password hashing algorithms (MD5/SHA1/SHA256 — bcrypt/argon2/scrypt required)
+   - Timing attacks (direct `==` comparison on passwords/tokens — use `hmac.compare_digest()`)
+
+The verification node deduplicates against the broad review's findings and merges any new issues into a single combined report.
 
 ---
 
 ## 📝 Changelog
 
-### v1.3.1 (Latest)
+### v2.0.0 (Latest)
+- **Two-pass review architecture**: Replaced the fix pipeline with a dedicated verification pass. The agent now runs a broad exhaustive review followed by a targeted second pass checking specifically for hardcoded credentials, bare `except` clauses, O(n²) string concatenation, weak password hashing algorithms, and timing attacks
+- **Verification node**: New `verification_node` receives the broad review's findings and merges any missed issues into a single combined report with deduplication
+- **Improved prompt coverage**: Added Section 14 (Exception Handling) and Section 15 (Performance) to the broad review prompt; hardcoded credentials added to the Security section
+- **Simplified graph**: `START → broad_review → verification → END` replaces the former `review → fix → execute → evaluate` loop
+- **Simplified state**: Removed fix-related state fields (`fixed_code`, `execution_result`, `attempt`, `error_history`, `current_issue_index`, `patch_retry_count`, `rejected_patches`, `fix_results`) and schemas (`FixedCode`, `PatchResult`)
+- **UI**: Removed Fixed Code and Diff View tabs; added "verifying" status badge state; button renamed from "Review & Fix" to "Review Code"
+
+### v1.3.1
 - **Fixed crash on execution failure**: The evaluate node no longer retries back into the fix node after all issues have been processed, preventing an index out of range crash when execution fails after fixes are applied
 
 ### v1.3.0

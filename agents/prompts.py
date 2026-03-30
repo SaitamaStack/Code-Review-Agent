@@ -1,11 +1,13 @@
 """
-System prompts for the code review and fix agent.
+System prompts for the two-pass code review agent.
 
 Contains carefully crafted prompts that instruct the LLM to:
-- Review code and identify issues
-- Fix code based on review or execution errors
+- Review code exhaustively and identify all issues (broad pass)
+- Perform a targeted second pass for categories LLMs commonly miss (verification pass)
 - Provide structured, parseable outputs
 """
+
+from models.schemas import CodeReview
 
 # =============================================================================
 # SYSTEM PROMPTS
@@ -72,6 +74,8 @@ STEP 4: For EACH function call, verify arguments are valid
 - os.system(), subprocess with shell=True
 - SQL string formatting (SQL injection)
 - pickle.load() from untrusted source
+- Hardcoded passwords, API keys, tokens, or secrets in string literals
+- Credentials embedded in connection strings or config values
 
 ### 9. RESOURCE LEAKS (severity: medium)
 - Files opened without closing
@@ -104,6 +108,16 @@ STEP 4: For EACH function call, verify arguments are valid
 - Returning internal mutable state that caller can modify
 - Not using .copy() or copy.deepcopy() when needed
 
+### 14. EXCEPTION HANDLING (severity: medium)
+- Bare except: clause catches ALL exceptions including SystemExit and KeyboardInterrupt — always wrong
+- except Exception: pass or except: pass silently swallowing errors — almost always a bug
+- Over-broad exception catching when a specific exception type is appropriate
+
+### 15. PERFORMANCE (severity: medium)
+- String concatenation in a loop: result += "..." inside for/while is O(n²) — use list then "".join()
+- Repeated list.index() or "in" checks on large lists (use sets for membership testing)
+- Nested loops over the same collection when a dict/set lookup would reduce complexity
+
 ## OUTPUT FORMAT
 
 Respond with JSON only:
@@ -122,22 +136,51 @@ Respond with JSON only:
 - @dataclass with field: list = [] is ALWAYS wrong - use field(default_factory=list)
 - Pydantic @validator without cls first param is ALWAYS wrong
 - Any tkinter widget.config() or widget.insert() from a thread is ALWAYS wrong
-- Modifying a dict/list passed as argument without .copy() is usually wrong"""
+- Modifying a dict/list passed as argument without .copy() is usually wrong
+- bare except: or except Exception: pass is almost always masking a real bug
+- String += in a loop is O(n²) - always use a list and join at the end"""
 
 
-FIX_SYSTEM_PROMPT = """You are a surgical Python code patch applier. You fix one specific issue at a time by returning a JSON patch object.
+VERIFICATION_SYSTEM_PROMPT = """You are a specialized security and quality auditor performing a SECOND PASS review. An initial review has already been performed. Your job is ONLY to find issues that were MISSED.
 
-You MUST respond with ONLY a valid JSON object in this exact format:
-{"line_start": <int>, "line_end": <int>, "replacement": "<string>", "explanation": "<string>"}
+## YOUR SPECIFIC FOCUS AREAS (categories initial reviews most commonly miss):
 
-Rules:
-- line_start: the first line number to replace (1-indexed, inclusive)
-- line_end: the last line number to replace (1-indexed, inclusive)
-- replacement: the exact new content for those lines (use \\n to separate multiple lines in JSON)
-- explanation: one sentence describing what you fixed
-- Change ONLY the lines required to fix the stated issue
-- Preserve all surrounding code, indentation, functions, classes, and imports exactly
-- Do not add, remove, or rename anything outside the specific lines being fixed"""
+### 1. HARDCODED CREDENTIALS (severity: high)
+- Passwords, API keys, tokens, or secrets assigned to any variable as string literals
+- Even if variable names look generic: data = "secret123", cfg = "abc_token"
+- Database connection strings with embedded credentials
+- Any string that looks like a password, API key, or access token
+
+### 2. EXCEPTION HANDLING FLAWS (severity: medium)
+- Bare except: clause (catches ALL exceptions including SystemExit, KeyboardInterrupt)
+- except Exception: pass or except: pass that silently swallows errors
+- Over-broad exception catching where a specific exception type is appropriate
+
+### 3. PERFORMANCE ANTI-PATTERNS (severity: medium)
+- String concatenation inside a loop: result += "..." is O(n²) — must use list + "".join()
+- Repeated .index() or "in" checks on lists where a set would be O(1)
+- Nested loops over the same collection where a dict lookup would reduce complexity
+
+### 4. CRYPTOGRAPHY ERRORS (severity: high)
+- MD5, SHA1, or SHA256 used for PASSWORD HASHING — these are wrong for passwords; bcrypt, argon2, or scrypt required
+- Insecure random: random.random() or random.choice() used for security-sensitive values (use secrets module)
+- Hardcoded IVs, salts, or nonces
+
+### 5. TIMING ATTACKS (severity: high)
+- Direct string equality (== or !=) used to compare passwords, tokens, or cryptographic hashes
+- Must use hmac.compare_digest() or secrets.compare_digest() for constant-time comparison
+
+## INSTRUCTIONS:
+1. Read the initial review below to understand what was ALREADY caught
+2. Scan the code specifically for the 5 categories above
+3. Only report issues that are GENUINELY PRESENT in the code and NOT already covered by the initial review
+4. If a category is clean or already flagged, do not repeat it
+
+## OUTPUT FORMAT:
+{"issues": ["Line N: CATEGORY - description"], "suggestions": ["specific fix"], "severity": "low|medium|high", "summary": "text"}
+
+If nothing was missed, return:
+{"issues": [], "suggestions": [], "severity": "low", "summary": "Verification pass found no additional issues."}"""
 
 
 # =============================================================================
@@ -147,7 +190,7 @@ Rules:
 
 def get_review_prompt(code: str) -> str:
     """
-    Generate a prompt for reviewing code.
+    Generate a prompt for the broad first-pass code review.
 
     Args:
         code: Python source code to review
@@ -177,13 +220,15 @@ def get_review_prompt(code: str) -> str:
 □ KEYS: Is dict[key] used without checking if key exists?
 □ INDEX: Could any list index be out of bounds?
 □ LOGIC: Are comparisons correct? (< vs <=, == vs !=)
-□ SECURITY: Any eval(), exec(), os.system(), SQL formatting?
+□ SECURITY: Any eval(), exec(), os.system(), SQL formatting, hardcoded credentials?
 □ MUTABLE DEFAULTS: Any function with def foo(x=[]) or def foo(d={{}})? ALWAYS A BUG!
 □ DATACLASS DEFAULTS: Any dataclass with field: list = [] or field: dict = {{}}? Use field(default_factory=...)!
 □ PYDANTIC: Any @validator or @field_validator missing cls parameter?
 □ TKINTER THREADING: Any GUI updates (.config, .insert, etc.) from non-main thread?
 □ MUTATION: Does any function modify its input dict/list instead of copying?
 □ SHARED STATE: Any class variables or module globals that get mutated?
+□ EXCEPTIONS: Any bare except: or except Exception: pass silently swallowing errors?
+□ PERFORMANCE: Any string += inside a loop? (O(n²) — use list + join instead)
 
 ## RESPOND WITH JSON:
 {{"issues": ["Line N: CATEGORY - specific bug description"], "suggestions": ["how to fix it"], "severity": "high", "summary": "overview"}}
@@ -196,41 +241,39 @@ RULES:
 - CHECK EVERY LINE of the code"""
 
 
-def get_fix_patch_prompt(
-    code: str,
-    issue: str,
-    rejected_patches: list[str] | None = None,
-) -> str:
+def get_verification_prompt(code: str, prior_review: CodeReview) -> str:
     """
-    Generate a prompt asking the LLM to return a surgical line-range patch.
+    Generate a prompt for the targeted second-pass verification review.
+
+    Shows the LLM the original code and the prior review findings, then asks
+    it to check specifically for categories it most commonly misses.
 
     Args:
-        code: Current Python source code (shown with line numbers)
-        issue: The single issue to fix, as identified in the review
-        rejected_patches: Rejection messages from previous failed attempts
+        code: Python source code to verify
+        prior_review: The CodeReview produced by the broad first pass
 
     Returns:
         Formatted prompt string for the LLM
     """
     lines = code.split("\n")
-    numbered_code = "\n".join(f"{i + 1:3d}| {line}" for i, line in enumerate(lines))
+    numbered_code = "\n".join(f"{i+1:3d}| {line}" for i, line in enumerate(lines))
 
-    prompt = (
-        f"Fix this specific issue in the Python code below.\n\n"
-        f"ISSUE: {issue}\n\n"
-        f"CODE ({len(lines)} lines):\n"
-        f"{numbered_code}\n\n"
-        f"Return ONLY a JSON patch object:\n"
-        f'{{"line_start": N, "line_end": M, "replacement": "new lines here", "explanation": "what you fixed"}}\n\n'
-        f"- line_start and line_end are 1-indexed line numbers from the code above\n"
-        f"- replacement is the complete new content for those lines\n"
-        f"- Only change the lines directly involved in fixing the issue"
+    if prior_review.issues:
+        prior_issues = "\n".join(f"  - {issue}" for issue in prior_review.issues)
+    else:
+        prior_issues = "  (none found)"
+
+    return (
+        f"SECOND PASS: Find issues MISSED by the initial review.\n\n"
+        f"INITIAL REVIEW ALREADY FOUND:\n{prior_issues}\n\n"
+        f"CODE TO VERIFY ({len(lines)} lines):\n"
+        f"```python\n{numbered_code}\n```\n\n"
+        f"Check ONLY for these commonly missed categories:\n"
+        f"1. Hardcoded credentials (passwords, API keys, tokens in string literals)\n"
+        f"2. Bare except: or except Exception: pass silently swallowing errors\n"
+        f"3. String concatenation in a loop (result += '...' is O(n²))\n"
+        f"4. Wrong password hashing algorithm (MD5/SHA1/SHA256 for passwords — bcrypt/argon2/scrypt required)\n"
+        f"5. Timing attacks (== comparison on passwords/tokens — use hmac.compare_digest())\n\n"
+        f"Return ONLY issues that are PRESENT in the code and NOT already listed in the initial review.\n"
+        f'Return JSON: {{"issues": [...], "suggestions": [...], "severity": "low|medium|high", "summary": "..."}}'
     )
-
-    if rejected_patches:
-        prompt += (
-            f"\n\nPREVIOUS ATTEMPT REJECTED:\n{rejected_patches[-1]}\n"
-            f"Try a different approach."
-        )
-
-    return prompt
